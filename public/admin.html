@@ -59,6 +59,15 @@
   </div>
 
   <div class="card">
+    <h3>🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span></h3>
+    <div id="warmupAlert" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:13px">
+      <b style="color:#b91c1c">⚠️ 有账号 Cookie 失效！</b><br>
+      <span class="st">请运行本地续期脚本：<code>node ~/Desktop/DS工作台/scripts/contactout_keepalive.js</code>，然后把生成的 <code>SESSIONS_JSON_latest.txt</code> 内容更新到 Render 环境变量 SESSIONS_JSON，再点 <button class="sm gh" onclick="redeploy()">重新部署</button> 或等待自动部署。</span>
+    </div>
+    <div id="warmupList" style="display:flex;flex-wrap:wrap;gap:8px"><span class="st">加载中...</span></div>
+  </div>
+
+  <div class="card">
     <h3>📊 今日总览</h3>
     <div class="stats-row" id="statsRow"><div class="stat-box"><div class="n">-</div><div class="l">加载中</div></div></div>
   </div>
@@ -233,6 +242,29 @@ function downloadLog() {
   toast('开始下载日志 CSV');
 }
 
+// 账号 cookie 状态
+async function loadWarmup() {
+  try {
+    const j = await api('/admin/api/warmup');
+    const when = j.lastRun ? new Date(j.lastRun).toLocaleString('zh-CN', { hour12: false }) : '未运行';
+    document.getElementById('warmupHint').textContent = '上次预热: ' + when + ' · 有效 ' + j.ok + '/' + (j.accounts ? j.accounts.length : 0);
+    const bad = j.bad || [];
+    document.getElementById('warmupAlert').style.display = bad.length ? 'block' : 'none';
+    const list = document.getElementById('warmupList');
+    list.innerHTML = '';
+    for (const a of (j.accounts || [])) {
+      const isBad = a.lastWarmupBad;
+      const el = document.createElement('div');
+      el.style.cssText = 'background:' + (isBad ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (isBad ? '#fecaca' : '#bbf7d0') + ';border-radius:10px;padding:8px 12px;font-size:12px';
+      el.innerHTML = '<b>' + esc(a.email.split('@')[0]) + '</b> <span class="st">' + esc(a.email.split('@')[1]) + '</span><br>' +
+        (isBad ? '<span style="color:#b91c1c">❌ ' + esc(isBad) + '</span>' : '<span style="color:#15803d">✅ 正常</span>') +
+        ' <span class="st">邮箱' + (a.credit ?? '-') + ' 电话' + (a.phoneCredit ?? '-') + '</span>';
+      list.appendChild(el);
+    }
+  } catch (e) { /* 忽略 */ }
+}
+function redeploy() { toast('请在 Render Dashboard 手动触发 Deploy（环境变量已更新后）'); }
+
 // 备份 / 恢复
 document.getElementById('backupBtn').onclick = () => {
   const a = document.createElement('a');
@@ -269,8 +301,9 @@ document.getElementById('refreshLog').onclick = loadUsage;
 document.getElementById('logToken').onchange = loadUsage;
 document.getElementById('logDays').onchange = loadUsage;
 
-loadStats(); loadTokens(); loadUsage();
+loadStats(); loadTokens(); loadUsage(); loadWarmup();
 setInterval(loadStats, 30000);
+setInterval(loadWarmup, 60000);
 </script>
 </body>
 </html>

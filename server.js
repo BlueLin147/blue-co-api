@@ -670,14 +670,15 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
   }
 
-  // GET /admin/api/warmup  查看 cookie 预热状态
+  // GET /admin/api/warmup  查看 cookie 预热状态 (含失效警告)
   if (p === '/admin/api/warmup') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const accountStatus = SESSIONS.map(s => {
       const bad = warmupState.bad.find(b => b.email === s.email);
       return { email: s.email, userId: s.userId, credit: s.credit, phoneCredit: s.phoneCredit, lastWarmupBad: bad ? bad.reason : null };
     });
-    return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, accounts: accountStatus });
+    const hasBad = warmupState.bad && warmupState.bad.length > 0;
+    return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, has_bad: hasBad, accounts: accountStatus });
   }
 
   // GET /admin/api/usage?key=xxx&days=1&date=YYYY-MM-DD  查询日志 (可按口令/天数/日期过滤)
