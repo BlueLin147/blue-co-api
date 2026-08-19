@@ -85,6 +85,15 @@
   </div>
 
   <div class="card">
+    <h3>💾 数据备份 <span class="st">（Render 免费档重启会清空数据，建议定期备份）</span></h3>
+    <div class="row">
+      <button id="backupBtn">⬇ 下载完整备份</button>
+      <button class="gh" id="restoreBtn">⬆ 恢复备份</button>
+      <input type="file" id="restoreFile" accept=".json" style="display:none">
+    </div>
+  </div>
+
+  <div class="card">
     <h3>🕐 查询日志 <span class="st" id="logHint"></span></h3>
     <div class="row">
       <div class="fld"><label>按口令过滤</label><select id="logToken" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px"><option value="">全部</option></select></div>
@@ -223,6 +232,30 @@ function downloadLog() {
   a.remove();
   toast('开始下载日志 CSV');
 }
+
+// 备份 / 恢复
+document.getElementById('backupBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = '/admin/api/backup';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('开始下载备份');
+};
+document.getElementById('restoreBtn').onclick = () => document.getElementById('restoreFile').click();
+document.getElementById('restoreFile').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const j = await api('/admin/api/backup/restore', { method: 'POST', body: JSON.stringify({ data }) });
+    toast('恢复成功: ' + j.tokens + ' 个口令, ' + j.usage + ' 条日志');
+    loadTokens(); loadUsage(); loadStats();
+  } catch (err) { toast('恢复失败: ' + err.message); }
+  e.target.value = '';
+};
 
 document.getElementById('createBtn').onclick = () => {
   const name = document.getElementById('newName').value.trim() || '客户';

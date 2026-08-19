@@ -605,6 +605,29 @@ const server = http.createServer(async (req, res) => {
     saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
     return json(res, 200, { ok: true });
   }
+  // GET /admin/api/backup  下载完整备份 (tokens + usage)
+  if (p === '/admin/api/backup') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const backup = { exportedAt: Date.now(), tokens: CUSTOM_TOKENS, usage: USAGE_LOG };
+    const data = JSON.stringify(backup, null, 2);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('content-disposition', 'attachment; filename="co_backup_' + dayKey() + '.json"');
+    return res.end(data);
+  }
+  // POST /admin/api/backup/restore  恢复备份 (tokens + usage)
+  if (p === '/admin/api/backup/restore') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req);
+    let body = {};
+    try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const data = body.data || body;
+    if (!data || (!data.tokens && !data.usage)) return json(res, 400, { error: 'invalid backup data', hint: 'POST JSON {"data": <备份文件内容>}' });
+    if (data.tokens) { CUSTOM_TOKENS = Object.assign({}, data.tokens); saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
+    if (data.usage) { USAGE_LOG = data.usage.slice(-20000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
+    return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
+  }
+
   // GET /admin/api/usage?key=xxx&days=1&date=YYYY-MM-DD  查询日志 (可按口令/天数/日期过滤)
   if (p === '/admin/api/usage') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
