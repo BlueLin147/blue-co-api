@@ -76,11 +76,11 @@
     </div>
     <div class="credit-pill">
       <span class="n" id="creditNum">--</span>
-      <span class="l">剩余邮箱额度</span>
+      <span class="l" id="creditLabel">剩余邮箱额度</span>
     </div>
     <div class="credit-pill">
       <span class="n" id="phoneCreditNum">--</span>
-      <span class="l">剩余电话额度</span>
+      <span class="l" id="phoneCreditLabel">剩余电话额度</span>
     </div>
     <button class="gear" id="settingsBtn" title="设置口令">⚙️</button>
   </div>
@@ -169,21 +169,33 @@ async function api(path, opts) {
 async function refreshCredits() {
   try {
     const j = await api('/api/credits');
-    document.getElementById('creditNum').textContent = j.total_email_credit;
-    document.getElementById('phoneCreditNum').textContent = j.total_phone_credit;
-    document.getElementById('dot').className = 'dot ' + (j.total_email_credit > 0 ? 'ok' : 'bad');
-    // 显示我自己的限额
     const me = j.me;
+    // 管理员: 显示全局额度; 客户: 显示自己的额度
+    if (j.is_master) {
+      document.getElementById('creditNum').textContent = j.total_email_credit;
+      document.getElementById('phoneCreditNum').textContent = j.total_phone_credit;
+      document.getElementById('creditLabel').textContent = '账号池剩余邮箱';
+      document.getElementById('phoneCreditLabel').textContent = '账号池剩余电话';
+      document.getElementById('dot').className = 'dot ' + (j.total_email_credit > 0 ? 'ok' : 'bad');
+    } else if (me) {
+      const el = me.email_limit > 0 ? (me.email_limit - me.email_used) : '∞';
+      const pl = me.phone_limit > 0 ? (me.phone_limit - me.phone_used) : '∞';
+      document.getElementById('creditNum').textContent = el;
+      document.getElementById('phoneCreditNum').textContent = pl;
+      document.getElementById('creditLabel').textContent = '我的邮箱额度';
+      document.getElementById('phoneCreditLabel').textContent = '我的电话额度';
+      document.getElementById('dot').className = 'dot ' + (el !== 0 ? 'ok' : 'bad');
+    }
+    // 我的额度明细行
     if (me) {
-      const meTxt = '我的额度: 邮箱 ' + me.email_used + '/' + (me.email_limit || '∞') + ' · 电话 ' + me.phone_used + '/' + (me.phone_limit || '∞');
-      let el = document.getElementById('myQuota');
-      if (!el) {
-        el = document.createElement('div');
-        el.id = 'myQuota';
-        el.style.cssText = 'font-size:11.5px;color:var(--muted);margin-top:6px';
-        document.querySelector('.card .ctl').appendChild(el);
+      let el2 = document.getElementById('myQuota');
+      if (!el2) {
+        el2 = document.createElement('div');
+        el2.id = 'myQuota';
+        el2.style.cssText = 'font-size:11.5px;color:var(--muted);margin-top:6px';
+        document.querySelector('.card .ctl').appendChild(el2);
       }
-      el.textContent = meTxt;
+      el2.textContent = '我的额度: 邮箱 ' + me.email_used + '/' + (me.email_limit || '∞') + ' · 电话 ' + me.phone_used + '/' + (me.phone_limit || '∞');
     }
   } catch (e) { document.getElementById('creditNum').textContent = '--'; }
 }

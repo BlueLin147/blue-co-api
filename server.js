@@ -438,8 +438,13 @@ const server = http.createServer(async (req, res) => {
     if (!tokenOK(req, u)) return json(res, 401, { error: 'bad or missing token' });
     const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
     const tu = tokenUsage(tk);
-    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0 } : null;
-    return json(res, 200, { ok: true, accounts: stats(), total_email_credit: totalEmailCredit(), total_phone_credit: totalPhoneCredit(), resets: 'daily', me: my });
+    const isMaster = masterOK(req, u);
+    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, name: tu.name || '' } : null;
+    // 客户: 只返回自己的额度; 管理员: 额外返回全局账号池
+    if (!isMaster) {
+      return json(res, 200, { ok: true, resets: 'daily', me: my, is_master: false });
+    }
+    return json(res, 200, { ok: true, accounts: stats(), total_email_credit: totalEmailCredit(), total_phone_credit: totalPhoneCredit(), resets: 'daily', me: my, is_master: true });
   }
 
   // 单条查询: POST /api/reveal  {"profile_url":"...","full_name":"..."}
