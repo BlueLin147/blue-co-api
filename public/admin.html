@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blue 的 ContactOut · 管理后台</title>
+<style>
+  :root{--indigo:#4f46e5;--indigo2:#6366f1;--ink:#0f172a;--muted:#64748b;--line:#e8eaf1;--soft:#f6f7fb;--green:#16a34a;--red:#dc2626;--amber:#d97706;}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#eef0fb 0%,#f7f8fc 260px,#f7f8fc 100%);color:var(--ink);
+    font:14.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;padding:24px 16px 80px}
+  .wrap{max-width:1200px;margin:0 auto}
+  .hero{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--indigo),var(--indigo2));display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 8px 20px rgba(79,70,229,.3);color:#fff}
+  .htxt{flex:1;min-width:0}
+  h1{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:800}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}
+  .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.05);margin-bottom:16px}
+  .card h3{margin:0 0 12px;font-size:15px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+  .fld{display:flex;flex-direction:column;gap:4px}
+  .fld label{font-size:12px;font-weight:600;color:#475569}
+  .fld input{width:100%;border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px;outline:none;background:#fdfdfe}
+  .fld input:focus{border-color:var(--indigo)}
+  .fld input[type=number]{width:110px}
+  button{background:var(--indigo);color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:600;font-size:13px;cursor:pointer}
+  button:hover{opacity:.9}
+  button.gh{background:#f1f3f9;color:#334155;border:1px solid #e2e6ef}
+  button.red{background:#fef2f2;color:var(--red);border:1px solid #fecaca}
+  button.sm{padding:5px 10px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;padding:9px 10px;color:#64748b;font-weight:600;font-size:11.5px;border-bottom:1px solid #eef0f5;background:#f8fafc}
+  td{padding:9px 10px;border-bottom:1px solid #f3f5f9;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  .key{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#1d4ed8;word-break:break-all}
+  .tag{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:20px;font-weight:600}
+  .tag.on{background:#dcfce7;color:#15803d}
+  .tag.off{background:#fee2e2;color:#b91c1c}
+  .bar{background:#eef0f5;border-radius:6px;height:8px;width:80px;overflow:hidden;display:inline-block;vertical-align:middle}
+  .bar>div{height:100%;background:var(--indigo);border-radius:6px}
+  .st{font-size:11px;color:var(--muted)}
+  .stats-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:4px}
+  .stat-box{flex:1;min-width:150px;background:#f8fafc;border:1px solid #eef0f5;border-radius:12px;padding:12px 16px}
+  .stat-box .n{font-size:22px;font-weight:800;color:var(--indigo)}
+  .stat-box .l{font-size:11.5px;color:var(--muted)}
+  .copied{color:var(--green);font-size:11px;margin-left:6px}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:10px 20px;border-radius:10px;font-size:13px;display:none;z-index:99}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="logo">⚙️</div>
+    <div class="htxt">
+      <h1>ContactOut 管理后台</h1>
+      <div class="sub">口令管理 · 每日限额 · 查询监控</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>📊 今日总览</h3>
+    <div class="stats-row" id="statsRow"><div class="stat-box"><div class="n">-</div><div class="l">加载中</div></div></div>
+  </div>
+
+  <div class="card">
+    <h3>🔑 创建口令</h3>
+    <div class="row">
+      <div class="fld"><label>名称（客户名）</label><input id="newName" placeholder="客户A"></div>
+      <div class="fld"><label>每日邮箱限额</label><input id="newEmailLimit" type="number" value="20" min="0" placeholder="0=不限"></div>
+      <div class="fld"><label>每日电话限额</label><input id="newPhoneLimit" type="number" value="20" min="0" placeholder="0=不限"></div>
+      <button id="createBtn">＋ 创建</button>
+    </div>
+    <div class="st">限额 0 = 不限制（受账号总额度约束）</div>
+  </div>
+
+  <div class="card">
+    <h3>📋 口令列表</h3>
+    <div style="overflow-x:auto">
+      <table id="tbl">
+        <thead><tr><th>名称</th><th>口令</th><th>邮箱 已用/限额</th><th>电话 已用/限额</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>🕐 查询日志 <span class="st" id="logHint"></span></h3>
+    <div class="row">
+      <div class="fld"><label>按口令过滤</label><select id="logToken" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px"><option value="">全部</option></select></div>
+      <div class="fld"><label>时间范围</label>
+        <select id="logDays" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px">
+          <option value="1">今天</option><option value="2">近2天</option><option value="7">近7天</option>
+        </select>
+      </div>
+      <button class="gh" id="refreshLog">刷新</button>
+    </div>
+    <div style="overflow-x:auto;max-height:420px;overflow-y:auto">
+      <table id="logTbl">
+        <thead><tr><th>时间</th><th>口令</th><th>类型</th><th>Profile</th><th>邮箱</th><th>电话</th><th>结果</th></tr></thead>
+        <tbody id="logBody"><tr><td colspan="7" class="st" style="text-align:center;padding:20px">选择口令/刷新加载日志</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let MASTER = localStorage.getItem('co_master_token') || '';
+function headers() { return MASTER ? { 'Content-Type': 'application/json', 'x-co-token': MASTER } : { 'Content-Type': 'application/json' }; }
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 2500); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+function fmtTime(ts) { if (!ts) return '-'; const d = new Date(ts); return d.toLocaleString('zh-CN', { hour12: false }); }
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
+  if (r.status === 401) { if (!confirm('需要管理员口令。是否现在输入？')) throw new Error('未授权'); const k = prompt('输入管理员口令:'); if (k) { MASTER = k; localStorage.setItem('co_master_token', k); return api(path, opts); } throw new Error('未授权'); }
+  if (!r.ok) throw new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status));
+  return j;
+}
+
+// 总览
+async function loadStats() {
+  try {
+    const j = await api('/admin/api/stats');
+    const a = j.accounts || [];
+    const emailSum = a.reduce((s, x) => s + (x.email_credit || 0), 0);
+    const phoneSum = a.reduce((s, x) => s + (x.phone_credit || 0), 0);
+    const bk = j.by_kind || {};
+    document.getElementById('statsRow').innerHTML =
+      '<div class="stat-box"><div class="n">' + j.today_queries + '</div><div class="l">今日查询次数</div></div>' +
+      '<div class="stat-box"><div class="n">' + (bk.email || 0) + ' / ' + (bk.phone || 0) + '</div><div class="l">邮箱 / 电话查询</div></div>' +
+      '<div class="stat-box"><div class="n">' + a.length + '</div><div class="l">账号数</div></div>' +
+      '<div class="stat-box"><div class="n">' + emailSum + ' / ' + phoneSum + '</div><div class="l">邮箱 / 电话剩余</div></div>';
+  } catch (e) { document.getElementById('statsRow').innerHTML = '<div class="stat-box"><div class="n">!</div><div class="l">' + esc(e.message) + '</div></div>'; }
+}
+
+// 口令列表
+async function loadTokens() {
+  try {
+    const j = await api('/admin/api/tokens');
+    const tb = document.getElementById('tbody');
+    tb.innerHTML = '';
+    const sel = document.getElementById('logToken');
+    sel.innerHTML = '<option value="">全部</option>';
+    for (const t of j.tokens) {
+      const opt = document.createElement('option');
+      opt.value = t.key; opt.textContent = t.name + (t.isEnv ? ' (env)' : '');
+      sel.appendChild(opt);
+      const ep = t.email_limit > 0 ? Math.min(100, Math.round((t.email_used / t.email_limit) * 100)) : 0;
+      const pp = t.phone_limit > 0 ? Math.min(100, Math.round((t.phone_used / t.phone_limit) * 100)) : 0;
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><b>' + esc(t.name) + '</b></td>' +
+        '<td class="key">' + esc(t.key) + ' <button class="gh sm" onclick="copyKey(\'' + t.key + '\')">复制</button></td>' +
+        '<td>' + t.email_used + ' / ' + (t.email_limit || '∞') + ' <span class="bar"><div style="width:' + ep + '%"></div></span></td>' +
+        '<td>' + t.phone_used + ' / ' + (t.phone_limit || '∞') + ' <span class="bar"><div style="width:' + pp + '%"></div></span></td>' +
+        '<td>' + (t.active ? '<span class="tag on">启用</span>' : '<span class="tag off">停用</span>') + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="gh sm" onclick="editLimit(\'' + t.key + '\',\'' + t.name + '\',' + (t.email_limit || 0) + ',' + (t.phone_limit || 0) + ')">限额</button> ' +
+          '<button class="' + (t.active ? 'red' : 'gh') + ' sm" onclick="toggleToken(\'' + t.key + '\',' + (!t.active) + ')">' + (t.active ? '停用' : '启用') + '</button> ' +
+          (!t.isEnv ? '<button class="red sm" onclick="delToken(\'' + t.key + '\')">删除</button>' : '') +
+        '</td>';
+      tb.appendChild(tr);
+    }
+  } catch (e) { toast('加载口令失败: ' + e.message); }
+}
+
+function copyKey(k) { navigator.clipboard.writeText(k); toast('口令已复制'); }
+function toggleToken(k, active) { api('/admin/api/tokens/toggle', { method: 'POST', body: JSON.stringify({ key: k, active }) }).then(() => { toast(active ? '已启用' : '已停用'); loadTokens(); }).catch(e => toast(e.message)); }
+function delToken(k) { if (!confirm('确定删除该口令？')) return; api('/admin/api/tokens/delete', { method: 'POST', body: JSON.stringify({ key: k }) }).then(() => { toast('已删除'); loadTokens(); }).catch(e => toast(e.message)); }
+function editLimit(k, name, el, pl) {
+  const ne = prompt('设置 ' + name + ' 每日邮箱限额 (0=不限):', el);
+  if (ne === null) return;
+  const np = prompt('设置 ' + name + ' 每日电话限额 (0=不限):', pl);
+  if (np === null) return;
+  api('/admin/api/tokens/limit', { method: 'POST', body: JSON.stringify({ key: k, email_limit: parseInt(ne, 10) || 0, phone_limit: parseInt(np, 10) || 0 }) }).then(() => { toast('限额已更新'); loadTokens(); }).catch(e => toast(e.message));
+}
+
+// 查询日志
+async function loadUsage() {
+  try {
+    const key = document.getElementById('logToken').value;
+    const days = document.getElementById('logDays').value;
+    const j = await api('/admin/api/usage?key=' + encodeURIComponent(key) + '&days=' + days);
+    document.getElementById('logHint').textContent = '共 ' + j.count + ' 条';
+    const tb = document.getElementById('logBody');
+    tb.innerHTML = '';
+    if (!j.rows.length) { tb.innerHTML = '<tr><td colspan="7" class="st" style="text-align:center;padding:20px">无记录</td></tr>'; return; }
+    const kindLabel = { email: '📧邮箱', phone: '📞电话', both: '📧+📞', batch: '📦批量' };
+    for (const r of j.rows.slice(0, 200)) {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="st">' + fmtTime(r.ts) + '</td>' +
+        '<td>' + esc(r.name || r.token) + '</td>' +
+        '<td>' + (kindLabel[r.kind] || r.kind) + '</td>' +
+        '<td class="key" style="max-width:220px">' + esc(String(r.profile || '').slice(0, 50)) + '</td>' +
+        '<td style="color:#059669;max-width:200px;word-break:break-all">' + esc(String(r.email || '').slice(0, 60)) + '</td>' +
+        '<td style="color:#7c3aed">' + esc(String(r.phone || '')) + '</td>' +
+        '<td>' + (r.ok ? '<span class="tag on">查到</span>' : (r.restricted ? '<span class="tag off">受限</span>' : '<span class="st">无</span>')) + '</td>';
+      tb.appendChild(tr);
+    }
+  } catch (e) { toast('加载日志失败: ' + e.message); }
+}
+
+document.getElementById('createBtn').onclick = () => {
+  const name = document.getElementById('newName').value.trim() || '客户';
+  const el = parseInt(document.getElementById('newEmailLimit').value, 10) || 0;
+  const pl = parseInt(document.getElementById('newPhoneLimit').value, 10) || 0;
+  api('/admin/api/tokens', { method: 'POST', body: JSON.stringify({ name, email_limit: el, phone_limit: pl }) })
+    .then(j => { toast('创建成功! 口令: ' + j.token); loadTokens(); document.getElementById('newName').value = ''; })
+    .catch(e => toast(e.message));
+};
+document.getElementById('refreshLog').onclick = loadUsage;
+document.getElementById('logToken').onchange = loadUsage;
+document.getElementById('logDays').onchange = loadUsage;
+
+loadStats(); loadTokens(); loadUsage();
+setInterval(loadStats, 30000);
+</script>
+</body>
+</html>

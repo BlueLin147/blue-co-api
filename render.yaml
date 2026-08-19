@@ -1,0 +1,18 @@
+# Render Blueprint — Blue's ContactOut API
+# 部署: Render Dashboard → New + → Blueprint → 选本仓库 → 填环境变量 → Apply
+services:
+  - type: web
+    name: blue-co-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # —— 管理员口令: 逗号分隔可多个。后台管理 (创建客户口令/看用量) 用它 ——
+      - key: ACCESS_TOKEN
+        sync: false
+      # —— 账号池: 10 个 ContactOut 账号的 cookie+userId 的 JSON 数组 ——
+      - key: SESSIONS_JSON
+        sync: false

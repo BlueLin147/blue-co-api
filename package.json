@@ -1,0 +1,12 @@
+{
+  "name": "blue-co-api",
+  "version": "1.0.0",
+  "description": "Blue's ContactOut Email+Phone Lookup API (multi-account rotation)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

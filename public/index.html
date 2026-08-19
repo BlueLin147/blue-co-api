@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blue 的 ContactOut 邮箱查询系统</title>
+<style>
+  :root{--indigo:#4f46e5;--indigo2:#6366f1;--ink:#0f172a;--muted:#64748b;--line:#e8eaf1;--soft:#f6f7fb;--green:#16a34a;--red:#dc2626;--amber:#d97706;}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#eef0fb 0%,#f7f8fc 260px,#f7f8fc 100%);color:var(--ink);
+    font:14.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;padding:24px 16px 80px}
+  .wrap{max-width:1100px;margin:0 auto}
+  .hero{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--indigo),var(--indigo2));display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 8px 20px rgba(79,70,229,.3);color:#fff}
+  .htxt{flex:1;min-width:0}
+  h1{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:800}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}
+  .credit-pill{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 14px;display:flex;flex-direction:column;align-items:flex-end}
+  .credit-pill .n{font-size:19px;font-weight:800;color:var(--indigo);line-height:1.1}
+  .credit-pill .l{font-size:10.5px;color:var(--muted)}
+  .gear{background:#fff;border:1px solid var(--line);border-radius:12px;width:44px;height:44px;cursor:pointer;font-size:19px;color:#475569;box-shadow:0 10px 30px rgba(15,23,42,.05)}
+  .gear:hover{background:var(--soft)}
+  .mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50}
+  .mask.on{display:flex}
+  .modal{background:#fff;border-radius:16px;width:420px;max-width:92vw;padding:20px;box-shadow:0 24px 60px rgba(0,0,0,.25)}
+  .modal h3{margin:0 0 6px;font-size:16px}
+  .modal .sub2{color:var(--muted);font-size:12px;margin-bottom:14px}
+  .modal label{display:block;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px}
+  .modal input{width:100%;border:1px solid #d8dbe5;border-radius:9px;padding:9px 11px;font:13px ui-monospace,Menlo,monospace;color:var(--ink);outline:none;margin-bottom:12px}
+  .modal input:focus{border-color:var(--indigo)}
+  .modal .mrow{display:flex;gap:8px;justify-content:flex-end}
+  .msave{background:var(--indigo);color:#fff;border:0;border-radius:9px;padding:8px 18px;font-weight:600;cursor:pointer}
+  .mlight{background:#f1f3f9;color:#334155;border:1px solid #e2e6ef;border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:500}
+  .mstatus{font-size:11.5px;color:var(--muted);margin-top:4px}
+  
+  .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.05);margin-bottom:16px}
+  textarea#in{width:100%;min-height:130px;max-height:280px;resize:vertical;border:1px solid #d8dbe5;border-radius:10px;padding:11px;
+    font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--ink);outline:none}
+  textarea#in:focus{border-color:var(--indigo)}
+  .ctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:11px}
+  button.go{background:var(--indigo);color:#fff;border:0;border-radius:10px;padding:10px 22px;font-weight:600;font-size:14px;cursor:pointer;box-shadow:0 6px 16px rgba(79,70,229,.26)}
+  button.go:disabled{opacity:.6;cursor:default;box-shadow:none}
+  button.go2{background:#fff;color:var(--indigo);border:1.5px solid var(--indigo);border-radius:10px;padding:9px 18px;font-weight:600;font-size:14px;cursor:pointer}
+  button.go2:hover{background:var(--soft)}
+  button.go2:disabled{opacity:.55;cursor:default}
+  .prog{font-size:12px;color:var(--muted);margin-left:auto;text-align:right;min-height:16px;font-weight:500}
+  
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+  th{text-align:left;padding:9px 10px;color:#64748b;font-weight:600;font-size:11.5px;border-bottom:1px solid #eef0f5;background:#f8fafc}
+  td{padding:9px 10px;border-bottom:1px solid #f3f5f9;vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  .li{color:#1d4ed8;word-break:break-all;font-size:11.5px}
+  .em{color:#059669;word-break:break-all}
+  .ph{color:#7c3aed;word-break:break-all}
+  .empty{padding:30px;text-align:center;color:#94a3b8;font-size:13px}
+  .foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}
+  .gh{background:#f1f3f9;color:#334155;border:1px solid #e2e6ef;border-radius:9px;padding:7px 13px;font-size:12.5px;cursor:pointer;font-weight:500;transition:all .15s}
+  .gh:hover{background:#e9ecf4}
+  .gh.on{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+  .stat{font-size:11.5px;margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#cbd5e1;display:inline-block}
+  .dot.ok{background:var(--green)}.dot.bad{background:var(--red)}
+  .guess{font-size:10px;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;margin-left:4px}
+  .rownum{color:#94a3b8;font-size:11px}
+  @media(max-width:640px){.credit-pill{align-items:flex-start}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="logo">📇</div>
+    <div class="htxt">
+      <h1>Blue 的 ContactOut 邮箱查询系统</h1>
+      <div class="sub">粘贴 LinkedIn 链接，自动查询邮箱 · 结果实时显示 · 支持导出 CSV</div>
+    </div>
+    <div class="credit-pill">
+      <span class="n" id="creditNum">--</span>
+      <span class="l">剩余邮箱额度</span>
+    </div>
+    <div class="credit-pill">
+      <span class="n" id="phoneCreditNum">--</span>
+      <span class="l">剩余电话额度</span>
+    </div>
+    <button class="gear" id="settingsBtn" title="设置口令">⚙️</button>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="mask" id="settingsMask">
+    <div class="modal">
+      <h3>⚙️ 设置</h3>
+      <div class="sub2">填写你的访问口令后即可查询</div>
+      <label for="tokenInput">访问口令</label>
+      <input id="tokenInput" placeholder="输入口令，如 co_xxxxxxxx" autocomplete="off">
+      <div class="mstatus" id="tokenStatus"></div>
+      <div class="mrow">
+        <button class="mlight" id="tokenClear">清除</button>
+        <button class="msave" id="tokenSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <textarea id="in" placeholder="每行一个 LinkedIn 链接（可加姓名提高命中率，逗号分隔）&#10;https://www.linkedin.com/in/tahseenislam&#10;https://www.linkedin.com/in/holly-brown-7baa474a, Holly Brown&#10;也可以直接写：tahseenislam"></textarea>
+    <div class="ctl">
+      <button class="go" id="goBtn">🔍 查邮箱+电话</button>
+      <button class="go2" id="goEmailBtn">📧 单查邮箱</button>
+      <button class="go2" id="goPhoneBtn">📞 单查电话</button>
+      <span class="prog" id="prog"></span>
+    </div>
+  </div>
+
+  <div class="card" id="resultCard">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;font-size:15px">查询结果 <span id="resultCount" class="rownum"></span></div>
+      <div class="foot" style="margin-top:0">
+        <button class="gh" onclick="exportCSV()">⬇ 导出 CSV</button>
+        <button class="gh" onclick="copyAll()">📋 复制全部邮箱</button>
+        <button class="gh" onclick="clearResults()">🗑 清空</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="tbl">
+        <thead><tr><th>#</th><th>LinkedIn</th><th>邮箱</th><th>电话</th><th>状态</th></tr></thead>
+        <tbody id="tbody"><tr><td colspan="5" class="empty">查询后结果会显示在这里</td></tr></tbody>
+      </table>
+    </div>
+    <div class="stat"><span class="dot" id="dot"></span><span id="statText">就绪</span></div>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('co_token') || '';
+function headers() { return TOKEN ? { 'Content-Type': 'application/json', 'x-co-token': TOKEN } : { 'Content-Type': 'application/json' }; }
+
+// 设置弹窗
+const mask = document.getElementById('settingsMask');
+const tokenInput = document.getElementById('tokenInput');
+const tokenStatus = document.getElementById('tokenStatus');
+document.getElementById('settingsBtn').onclick = () => {
+  tokenInput.value = TOKEN;
+  tokenStatus.textContent = TOKEN ? '当前已设置口令' : '未设置口令';
+  mask.classList.add('on');
+  setTimeout(() => tokenInput.focus(), 100);
+};
+document.getElementById('tokenSave').onclick = () => {
+  const v = tokenInput.value.trim();
+  if (v) { TOKEN = v; localStorage.setItem('co_token', v); tokenStatus.textContent = '已保存'; refreshCredits(); }
+  else { TOKEN = ''; localStorage.removeItem('co_token'); tokenStatus.textContent = '已清除'; refreshCredits(); }
+  setTimeout(() => mask.classList.remove('on'), 600);
+};
+document.getElementById('tokenClear').onclick = () => {
+  TOKEN = ''; localStorage.removeItem('co_token'); tokenInput.value = ''; tokenStatus.textContent = '已清除';
+  refreshCredits();
+};
+mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('on'); });
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
+  if (r.status === 401) {
+    mask.classList.add('on');
+    tokenStatus.textContent = '口令无效或未设置，请填写正确口令';
+    throw new Error('未授权');
+  }
+  if (!r.ok) throw new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status));
+  return j;
+}
+async function refreshCredits() {
+  try {
+    const j = await api('/api/credits');
+    document.getElementById('creditNum').textContent = j.total_email_credit;
+    document.getElementById('phoneCreditNum').textContent = j.total_phone_credit;
+    document.getElementById('dot').className = 'dot ' + (j.total_email_credit > 0 ? 'ok' : 'bad');
+    // 显示我自己的限额
+    const me = j.me;
+    if (me) {
+      const meTxt = '我的额度: 邮箱 ' + me.email_used + '/' + (me.email_limit || '∞') + ' · 电话 ' + me.phone_used + '/' + (me.phone_limit || '∞');
+      let el = document.getElementById('myQuota');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'myQuota';
+        el.style.cssText = 'font-size:11.5px;color:var(--muted);margin-top:6px';
+        document.querySelector('.card .ctl').appendChild(el);
+      }
+      el.textContent = meTxt;
+    }
+  } catch (e) { document.getElementById('creditNum').textContent = '--'; }
+}
+function parseInput() {
+  const raw = document.getElementById('in').value;
+  return raw.split(/\n/).map(s => s.trim()).filter(Boolean);
+}
+function normPhones(phones) {
+  if (!phones) return [];
+  if (typeof phones === 'string') return [{ value: phones }];
+  if (Array.isArray(phones)) return phones.map(p => typeof p === 'string' ? { value: p } : p);
+  return [];
+}
+function addRow(idx, linkedin, emails, phones, status) {
+  const tb = document.getElementById('tbody');
+  const tr = document.createElement('tr');
+  const emailsHtml = emails && emails.length ? emails.map(e => {
+    const guess = e.is_guess ? '<span class="guess">AI猜</span>' : '';
+    return '<div class="em">' + esc(e.value) + guess + '</div>';
+  }).join('') : '<span style="color:#94a3b8">—</span>';
+  const phonesNorm = normPhones(phones);
+  const phonesHtml = phonesNorm.length ? phonesNorm.map(p => '<div class="ph">' + esc(p.value) + '</div>').join('') : '<span style="color:#94a3b8">—</span>';
+  tr.innerHTML = '<td class="rownum">' + idx + '</td>' +
+    '<td class="li">' + esc(linkedin) + '</td>' +
+    '<td>' + emailsHtml + '</td>' +
+    '<td>' + phonesHtml + '</td>' +
+    '<td>' + esc(status) + '</td>';
+  tb.appendChild(tr);
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function setProg(t) { document.getElementById('prog').textContent = t; }
+function setStat(t, ok) {
+  document.getElementById('statText').textContent = t;
+  document.getElementById('dot').className = 'dot ' + (ok ? 'ok' : 'bad');
+}
+async function run(mode) {
+  const urls = parseInput();
+  if (!urls.length) { alert('请先粘贴 LinkedIn 链接'); return; }
+  document.getElementById('goBtn').disabled = true;
+  document.getElementById('goEmailBtn').disabled = true;
+  document.getElementById('goPhoneBtn').disabled = true;
+  document.getElementById('tbody').innerHTML = '';
+  document.getElementById('resultCount').textContent = '共 ' + urls.length + ' 条';
+  setProg('0 / ' + urls.length);
+  setStat('查询中…', true);
+  const results = [];
+  try {
+    // 单条查询, 逐个显示
+    for (let i = 0; i < urls.length; i++) {
+      setProg((i + 1) + ' / ' + urls.length);
+      try {
+        let j;
+        if (mode === 'email') {
+          j = await api('/api/reveal', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+        } else if (mode === 'phone') {
+          j = await api('/api/phone', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+        } else {
+          j = await api('/api/find', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+        }
+        const emails = j.data.emails || [];
+        const phones = normPhones(j.data.phones);
+        const st = (emails.length || phones.length) ? '✅ 已查' : '（无结果）';
+        addRow(i + 1, urls[i], emails, phones, st);
+        results.push({ linkedin: urls[i], emails: emails.map(e => e.value).join('; '), phones: phones.map(p => p.value).join('; ') });
+        setStat('已查 ' + (i + 1) + ' 条', true);
+      } catch (e) {
+        addRow(i + 1, urls[i], [], [], '❌ ' + e.message);
+        setStat('第 ' + (i + 1) + ' 条失败: ' + e.message, false);
+      }
+      refreshCredits();
+    }
+  } finally {
+    document.getElementById('goBtn').disabled = false;
+    document.getElementById('goEmailBtn').disabled = false;
+    document.getElementById('goPhoneBtn').disabled = false;
+    setProg('');
+    refreshCredits();
+  }
+}
+function exportCSV() {
+  const rows = [['LinkedIn', 'Email', 'Phone']];
+  document.querySelectorAll('#tbody tr').forEach(tr => {
+    const tds = tr.querySelectorAll('td');
+    if (tds.length >= 4) {
+      rows.push([tds[1].textContent, tds[2].textContent, tds[3].textContent]);
+    }
+  });
+  const csv = '\ufeff' + rows.map(r => r.map(v => '"' + v.replace(/"/g, '""') + '"').join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'contactout_结果_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+}
+function copyAll() {
+  const emails = [];
+  document.querySelectorAll('#tbody tr').forEach(tr => {
+    const tds = tr.querySelectorAll('td');
+    if (tds.length >= 3) tds[2].textContent.split('\n').forEach(s => { s = s.trim(); if (s) emails.push(s); });
+  });
+  const uniq = [...new Set(emails)];
+  if (!uniq.length) { alert('没有邮箱可复制'); return; }
+  navigator.clipboard.writeText(uniq.join('\n')).then(() => alert('已复制 ' + uniq.length + ' 个邮箱'));
+}
+function clearResults() { document.getElementById('tbody').innerHTML = '<tr><td colspan="5" class="empty">查询后结果会显示在这里</td></tr>'; document.getElementById('resultCount').textContent = ''; }
+document.getElementById('goBtn').onclick = () => run('both');
+document.getElementById('goEmailBtn').onclick = () => run('email');
+document.getElementById('goPhoneBtn').onclick = () => run('phone');
+document.getElementById('in').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run('both'); });
+refreshCredits();
+</script>
+</body>
+</html>
