@@ -600,16 +600,44 @@ const server = http.createServer(async (req, res) => {
     saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
     return json(res, 200, { ok: true });
   }
-  // GET /admin/api/usage?key=xxx&days=1  查询日志 (可按口令/天数过滤)
+  // GET /admin/api/usage?key=xxx&days=1&date=YYYY-MM-DD  查询日志 (可按口令/天数/日期过滤)
   if (p === '/admin/api/usage') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const key = u.searchParams.get('key') || '';
     const days = parseInt(u.searchParams.get('days') || '1', 10) || 1;
-    const since = Date.now() - days * 86400000;
-    let rows = USAGE_LOG.filter(x => x.ts >= since && (!key || x.token === key));
+    const date = u.searchParams.get('date') || '';
+    const since = date ? new Date(date + 'T00:00:00').getTime() : (Date.now() - days * 86400000);
+    const until = date ? since + 86400000 : Date.now();
+    let rows = USAGE_LOG.filter(x => x.ts >= since && x.ts < until && (!key || x.token === key));
     // 按时间倒序
     rows = rows.sort((a, b) => b.ts - a.ts).slice(0, 2000);
     return json(res, 200, { ok: true, count: rows.length, rows });
+  }
+  // GET /admin/api/usage/export?key=xxx&days=1&format=csv  导出日志 CSV (可指定日期)
+  if (p === '/admin/api/usage/export') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const key = u.searchParams.get('key') || '';
+    const days = parseInt(u.searchParams.get('days') || '1', 10) || 1;
+    const date = u.searchParams.get('date') || ''; // YYYY-MM-DD 精确日期(优先)
+    const since = date ? new Date(date + 'T00:00:00').getTime() : (Date.now() - days * 86400000);
+    const until = date ? since + 86400000 : Date.now();
+    let rows = USAGE_LOG.filter(x => x.ts >= since && x.ts < until && (!key || x.token === key));
+    rows = rows.sort((a, b) => a.ts - b.ts);
+    // CSV
+    const esc = v => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const header = ['时间', '口令', '名称', 'IP', '类型', 'Profile', '邮箱', '电话', '结果'];
+    const lines = [header.join(',')].concat(rows.map(r => [
+      new Date(r.ts).toLocaleString('zh-CN', { hour12: false }),
+      r.token || '', r.name || '', r.ip || '',
+      r.kind || '', r.profile || '', r.email || '', r.phone || '',
+      r.ok ? '查到' : (r.restricted ? '受限' : '无')
+    ].map(esc).join(',')));
+    const csv = '\ufeff' + lines.join('\n');
+    const fname = 'usage_' + (date || new Date().toISOString().slice(0, 10)) + (key ? '_' + key.slice(-6) : '') + '.csv';
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/csv; charset=utf-8');
+    res.setHeader('content-disposition', 'attachment; filename="' + fname + '"');
+    return res.end(csv);
   }
   // GET /admin/api/stats  总览: 今日查询数/账号额度
   if (p === '/admin/api/stats') {

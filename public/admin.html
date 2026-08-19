@@ -90,10 +90,12 @@
       <div class="fld"><label>按口令过滤</label><select id="logToken" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px"><option value="">全部</option></select></div>
       <div class="fld"><label>时间范围</label>
         <select id="logDays" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px">
-          <option value="1">今天</option><option value="2">近2天</option><option value="7">近7天</option>
+          <option value="1">今天</option><option value="2">近2天</option><option value="7">近7天</option><option value="30">近30天</option>
         </select>
       </div>
+      <div class="fld"><label>指定日期</label><input type="date" id="logDate" style="border:1px solid #d8dbe5;border-radius:9px;padding:8px 10px;font-size:13px"></div>
       <button class="gh" id="refreshLog">刷新</button>
+      <button id="downloadLog">⬇ 下载 CSV</button>
     </div>
     <div style="overflow-x:auto;max-height:420px;overflow-y:auto">
       <table id="logTbl">
@@ -182,7 +184,10 @@ async function loadUsage() {
   try {
     const key = document.getElementById('logToken').value;
     const days = document.getElementById('logDays').value;
-    const j = await api('/admin/api/usage?key=' + encodeURIComponent(key) + '&days=' + days);
+    const date = document.getElementById('logDate').value;
+    let url = '/admin/api/usage?key=' + encodeURIComponent(key) + '&days=' + days;
+    if (date) url += '&date=' + date;
+    const j = await api(url);
     document.getElementById('logHint').textContent = '共 ' + j.count + ' 条';
     const tb = document.getElementById('logBody');
     tb.innerHTML = '';
@@ -201,6 +206,22 @@ async function loadUsage() {
       tb.appendChild(tr);
     }
   } catch (e) { toast('加载日志失败: ' + e.message); }
+}
+
+// 下载 CSV
+function downloadLog() {
+  const key = document.getElementById('logToken').value;
+  const days = document.getElementById('logDays').value;
+  const date = document.getElementById('logDate').value;
+  let url = '/admin/api/usage/export?key=' + encodeURIComponent(key) + '&days=' + days;
+  if (date) url += '&date=' + date;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('开始下载日志 CSV');
 }
 
 document.getElementById('createBtn').onclick = () => {
