@@ -119,6 +119,48 @@ function saveSessions() {
 }
 loadSessions();
 
+// —— Cookie 预热: 定期调 user/info 保持会话活跃 + 检测失效 ——
+const WARMUP_INTERVAL = parseInt(process.env.WARMUP_INTERVAL || '21600000', 10); // 默认 6 小时
+let warmupState = { lastRun: 0, ok: 0, bad: [] };
+
+async function warmupOnce() {
+  const results = { ok: 0, bad: [], time: Date.now() };
+  for (const s of SESSIONS) {
+    if (!s.cookie) { results.bad.push({ email: s.email || '?', reason: 'no_cookie' }); continue; }
+    try {
+      const r = await fetch('https://contactout.com/api/user/info?version=5.6.18', {
+        headers: { 'Cookie': s.cookie, 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36' },
+        signal: AbortSignal.timeout(15000),
+      });
+      const t = await r.text();
+      let d = null; try { d = JSON.parse(t); } catch (e) {}
+      if (r.status === 200 && d && d.user_id && d.user_id > 0) {
+        // 更新额度（顺便同步）
+        if (typeof d.credit === 'number') s.credit = d.credit;
+        if (typeof d.phoneCredit === 'number') s.phoneCredit = d.phoneCredit;
+        results.ok++;
+      } else if (r.status === 200 && d && d.user_id === -1) {
+        results.bad.push({ email: s.email || '?', reason: 'not_logged_in' });
+      } else {
+        results.bad.push({ email: s.email || '?', reason: 'http_' + r.status });
+      }
+    } catch (e) {
+      results.bad.push({ email: s.email || '?', reason: e.name === 'TimeoutError' ? 'timeout' : e.message });
+    }
+    await new Promise(r => setTimeout(r, 1500)); // 间隔防风控
+  }
+  if (SESSIONS.length) saveSessions();
+  warmupState = results;
+  console.log('[warmup] ok=' + results.ok + ' bad=' + results.bad.length + (results.bad.length ? ' bad:' + results.bad.map(b => b.email + '(' + b.reason + ')').join(',') : ''));
+  return results;
+}
+function startWarmup() {
+  if (WARMUP_INTERVAL <= 0) return;
+  warmupOnce().catch(() => {}); // 启动先跑一次
+  setInterval(() => warmupOnce().catch(() => {}), WARMUP_INTERVAL);
+}
+startWarmup();
+
 // 账号轮换状态
 let nextAccount = 0;
 let queue = [];       // 并发队列: { fn, resolve, reject }
@@ -626,6 +668,16 @@ const server = http.createServer(async (req, res) => {
     if (data.tokens) { CUSTOM_TOKENS = Object.assign({}, data.tokens); saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
     if (data.usage) { USAGE_LOG = data.usage.slice(-20000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
     return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
+  }
+
+  // GET /admin/api/warmup  查看 cookie 预热状态
+  if (p === '/admin/api/warmup') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const accountStatus = SESSIONS.map(s => {
+      const bad = warmupState.bad.find(b => b.email === s.email);
+      return { email: s.email, userId: s.userId, credit: s.credit, phoneCredit: s.phoneCredit, lastWarmupBad: bad ? bad.reason : null };
+    });
+    return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, accounts: accountStatus });
   }
 
   // GET /admin/api/usage?key=xxx&days=1&date=YYYY-MM-DD  查询日志 (可按口令/天数/日期过滤)
