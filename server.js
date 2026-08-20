@@ -37,10 +37,46 @@ function loadJSONFile(file, fallback) {
 }
 function saveJSONFile(file, data) {
   try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch (e) {}
+  // 同步到 Gist (tokens/usage 变更时)
+  if (GIST_TOKEN && GIST_ID) gistPush(true);
 }
 CUSTOM_TOKENS = loadJSONFile(TOKENS_FILE, {});
 USAGE_LOG = loadJSONFile(USAGE_FILE, []);
 if (USAGE_LOG.length > 20000) USAGE_LOG = USAGE_LOG.slice(-20000); // 只留最近 2 万条
+
+// —— Gist 持久化 (Render 免费档无持久磁盘, 用 GitHub Gist 存 tokens+usage) ——
+// 环境变量: GIST_TOKEN (GitHub PAT), GIST_ID (gist id), 文件: tokens.json + usage.json
+const GIST_TOKEN = process.env.GIST_TOKEN || '';
+const GIST_ID = process.env.GIST_ID || '';
+let _gistDebounce = null;
+async function gistPush(force) {
+  if (!GIST_TOKEN || !GIST_ID) return;
+  clearTimeout(_gistDebounce);
+  _gistDebounce = null;
+  const doPush = async () => {
+    try {
+      const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-20000)) } } };
+      await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: 'PATCH', headers: { 'Authorization': 'token ' + GIST_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+    } catch (e) {}
+  };
+  if (force) await doPush();
+  else _gistDebounce = setTimeout(doPush, 2000);
+}
+async function gistPull() {
+  if (!GIST_TOKEN || !GIST_ID) return;
+  try {
+    const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+    const j = await r.json();
+    if (j.files && j.files['tokens.json'] && Object.keys(CUSTOM_TOKENS).length === 0) {
+      try { CUSTOM_TOKENS = JSON.parse(j.files['tokens.json'].content); } catch (e) {}
+    }
+    if (j.files && j.files['usage.json'] && USAGE_LOG.length === 0) {
+      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-20000); } catch (e) {}
+    }
+  } catch (e) {}
+}
 
 function dayKey() { return new Date().toISOString().slice(0, 10); }
 
@@ -739,6 +775,15 @@ server.listen(PORT, () => {
   console.log(`ContactOut API 服务已启动: http://localhost:${PORT}`);
   console.log(`账号数: ${SESSIONS.length}, 总邮箱额度: ${totalEmailCredit()}`);
   console.log(`访问令牌: ${TOKENS.length ? '已设置' : '未设置(开放)'}`);
+  if (GIST_TOKEN && GIST_ID) {
+    gistPull().then(() => {
+      console.log(`Gist 持久化: 已恢复 tokens ${Object.keys(CUSTOM_TOKENS).length} 个, usage ${USAGE_LOG.length} 条`);
+      // 恢复后立即同步一次 (防止本地为空覆盖)
+      gistPush(true);
+    });
+  } else {
+    console.log('Gist 持久化: 未配置 (设置 GIST_TOKEN/GIST_ID 后启用)');
+  }
 });
 
 // 优雅关闭
