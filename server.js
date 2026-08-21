@@ -407,12 +407,16 @@ async function lookupPhone(item) {
         if (typeof data.phone === 'object') phoneVal = String(data.phone.value || data.phone.number || data.phone.phone || '');
         else phoneVal = String(data.phone || '');
         const types = data.phoneTypes || {};
+        const phonesArr = (data.phones || []).filter(Boolean);
+        const phoneStrArr = phonesArr.map(p => typeof p === 'string' ? p : (p.value || p.number || p.phone || '')).filter(Boolean);
+        const phone_all = phoneStrArr.length ? phoneStrArr.join('; ') : phoneVal;
         return {
           ok: true,
           linkedin: item.profile_url,
           phone: phoneVal,
           phone_type: types[phoneVal] || 'unknown',
-          phones: (data.phones || []).filter(Boolean),
+          phones: phonesArr,
+          phone_all,
           credit_used: 1,
           credit_remaining: typeof data.credit === 'number' ? data.credit : session.phoneCredit,
         };
@@ -562,7 +566,7 @@ const server = http.createServer(async (req, res) => {
     if (body.full_name) item.full_name = String(body.full_name);
     const r = await enqueue(() => lookupPhone(item));
     if (r.ok && r.phone) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone || '', restricted: r.error === 'restricted' });
+    logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone_all || r.phone || '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
     if (r.found === false) return json(res, 200, { code: 0, data: r });
@@ -587,7 +591,7 @@ const server = http.createServer(async (req, res) => {
     const [em, ph] = await Promise.all([enqueue(() => lookupOne(item)), enqueue(() => lookupPhone(item))]);
     if (em.ok && em.emails && em.emails.length > 0) consumeQuota(tk, 'email');
     if (ph.ok && ph.phone) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? ph.phone : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
+    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
     const phoneList = ph.ok ? (ph.phones && ph.phones.length ? ph.phones : (ph.phone ? [ph.phone] : [])) : [];
     return json(res, 200, { code: 0, data: {
       ok: em.ok || ph.ok,
