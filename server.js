@@ -539,7 +539,7 @@ const server = http.createServer(async (req, res) => {
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
     const r = await enqueue(() => lookupOne(item));
-    consumeQuota(tk, 'email');
+    if (r.ok && r.emails && r.emails.length > 0) consumeQuota(tk, 'email');
     logUsage(req, tk, { kind: 'email', profile: item.profile_url, ok: !!r.ok, email: r.emails ? r.emails.map(e => e.value).join(';') : '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r, credits: { used: r.credit_used, remaining: r.credit_remaining } });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
@@ -560,7 +560,7 @@ const server = http.createServer(async (req, res) => {
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
     const r = await enqueue(() => lookupPhone(item));
-    consumeQuota(tk, 'phone');
+    if (r.ok && r.phone) consumeQuota(tk, 'phone');
     logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone || '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
@@ -584,8 +584,8 @@ const server = http.createServer(async (req, res) => {
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
     const [em, ph] = await Promise.all([enqueue(() => lookupOne(item)), enqueue(() => lookupPhone(item))]);
-    consumeQuota(tk, 'email');
-    consumeQuota(tk, 'phone');
+    if (em.ok && em.emails && em.emails.length > 0) consumeQuota(tk, 'email');
+    if (ph.ok && ph.phone) consumeQuota(tk, 'phone');
     logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? ph.phone : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
     const phoneList = ph.ok ? (ph.phones && ph.phones.length ? ph.phones : (ph.phone ? [ph.phone] : [])) : [];
     return json(res, 200, { code: 0, data: {
@@ -623,9 +623,9 @@ const server = http.createServer(async (req, res) => {
       const r = await enqueue(() => lookupOne(item));
       results.push(r);
     }
-    consumeQuota(tk, 'email', results.length);
+    const okCount = results.filter(r => r.ok && r.emails && r.emails.length > 0).length;
+    consumeQuota(tk, 'email', okCount);
     logUsage(req, tk, { kind: 'batch', profile: 'batch:' + items.length, ok: results.some(r => r.ok), email: results.filter(r => r.ok).map(r => r.emails ? r.emails.map(e => e.value).join(';') : '').join('|') });
-    const okCount = results.filter(r => r.ok).length;
     return json(res, 200, { ok: true, total: results.length, found: okCount, results });
   }
 
