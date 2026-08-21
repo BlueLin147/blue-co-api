@@ -61,7 +61,6 @@
   .stat{font-size:11.5px;margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--muted)}
   .dot{width:8px;height:8px;border-radius:50%;background:#cbd5e1;display:inline-block}
   .dot.ok{background:var(--green)}.dot.bad{background:var(--red)}
-  .guess{font-size:10px;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;margin-left:4px}
   .rownum{color:#94a3b8;font-size:11px}
   @media(max-width:640px){.credit-pill{align-items:flex-start}}
 </style>
@@ -213,8 +212,7 @@ function addRow(idx, linkedin, emails, phones, status) {
   const tb = document.getElementById('tbody');
   const tr = document.createElement('tr');
   const emailsHtml = emails && emails.length ? emails.map(e => {
-    const guess = e.is_guess ? '<span class="guess">AI猜</span>' : '';
-    return '<div class="em">' + esc(e.value) + guess + '</div>';
+    return '<div class="em">' + esc(e.value) + '</div>';
   }).join('') : '<span style="color:#94a3b8">—</span>';
   const phonesNorm = normPhones(phones);
   const phonesHtml = phonesNorm.length ? phonesNorm.map(p => '<div class="ph">' + esc(p.value) + '</div>').join('') : '<span style="color:#94a3b8">—</span>';
