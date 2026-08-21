@@ -231,24 +231,15 @@ function downloadLog() {
   const key = document.getElementById('logToken').value;
   const days = document.getElementById('logDays').value;
   const date = document.getElementById('logDate').value;
-  let url = '/admin/api/usage/export?key=' + encodeURIComponent(key) + '&days=' + days;
+  let url = '/admin/api/usage/export?token=' + encodeURIComponent(MASTER) + '&key=' + encodeURIComponent(key) + '&days=' + days;
   if (date) url += '&date=' + date;
-  fetch(url, { headers: { 'x-co-token': MASTER } })
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.blob();
-    })
-    .then(blob => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'usage_log.csv';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(a.href);
-      toast('✅ 日志 CSV 已下载');
-    })
-    .catch(e => toast('❌ 下载失败: ' + e.message));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '查询日志_' + new Date().toLocaleString('zh-CN', { hour12: false }).replace(/[\/: ]/g, '-') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('开始下载日志 CSV');
 }
 
 // 账号 cookie 状态
