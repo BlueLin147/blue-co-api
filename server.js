@@ -160,7 +160,7 @@ const WARMUP_INTERVAL = parseInt(process.env.WARMUP_INTERVAL || '21600000', 10);
 let warmupState = { lastRun: 0, ok: 0, bad: [] };
 
 async function warmupOnce() {
-  const results = { ok: 0, bad: [], time: Date.now() };
+  const results = { ok: 0, bad: [], lastRun: Date.now() };
   for (const s of SESSIONS) {
     if (!s.cookie) { results.bad.push({ email: s.email || '?', reason: 'no_cookie' }); continue; }
     try {
@@ -187,6 +187,7 @@ async function warmupOnce() {
   }
   if (SESSIONS.length) saveSessions();
   warmupState = results;
+  if (typeof warmupState.lastRun !== 'number') warmupState.lastRun = Date.now();
   console.log('[warmup] ok=' + results.ok + ' bad=' + results.bad.length + (results.bad.length ? ' bad:' + results.bad.map(b => b.email + '(' + b.reason + ')').join(',') : ''));
   return results;
 }
