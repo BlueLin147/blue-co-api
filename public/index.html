@@ -284,7 +284,7 @@ function exportCSV() {
   const csv = '\ufeff' + rows.map(r => r.map(v => '"' + v.replace(/"/g, '""') + '"').join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = 'contactout_结果_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.download = '关键决策人_结果_' + new Date().toLocaleString('zh-CN', { hour12: false }).replace(/[\/: ]/g, '-') + '.csv';
   a.click();
 }
 function copyAll() {
