@@ -134,11 +134,27 @@ function genTokenKey() {
 
 // —— 账号池: 内存中维护, 每次查询更新额度 ——
 let SESSIONS = [];
-function loadSessions() {
+async function gistLoadSessions() {
+  const gid = process.env.SESSIONS_GIST || '';
+  if (!gid) return false;
+  try {
+    const r = await fetch(`https://api.github.com/gists/${gid}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+    const j = await r.json();
+    if (j.files && j.files['sessions.json']) {
+      const arr = JSON.parse(j.files['sessions.json'].content);
+      if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+    }
+  } catch (e) { console.error('Gist sessions 加载失败:', e.message); }
+  return false;
+}
+async function loadSessions() {
   try {
     let raw = null;
     if (process.env.SESSIONS_JSON) {
       raw = process.env.SESSIONS_JSON;
+    } else if (process.env.SESSIONS_GIST) {
+      if (await gistLoadSessions()) return;
+      raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
     } else {
       raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
     }
@@ -151,6 +167,7 @@ function loadSessions() {
 function saveSessions() {
   // 环境变量模式不写回 (cookie 由环境变量管理); 本地文件模式写回
   if (process.env.SESSIONS_JSON) return;
+  if (process.env.SESSIONS_GIST) return;
   try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(SESSIONS, null, 2)); } catch (e) {}
 }
 loadSessions();
