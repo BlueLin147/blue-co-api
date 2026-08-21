@@ -275,6 +275,7 @@ document.getElementById('backupBtn').onclick = () => {
   a.remove();
   toast('开始下载备份');
 };
+document.getElementById('downloadLog').onclick = downloadLog;
 document.getElementById('restoreBtn').onclick = () => document.getElementById('restoreFile').click();
 document.getElementById('restoreFile').onchange = async (e) => {
   const file = e.target.files[0];
