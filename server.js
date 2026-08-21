@@ -658,7 +658,11 @@ const server = http.createServer(async (req, res) => {
     const today = dayKey();
     const list = Object.keys(CUSTOM_TOKENS).map(k => {
       const t = CUSTOM_TOKENS[k];
-      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, created: t.created, active: t.active !== false };
+      // 累计查询数（从 usage 日志统计）
+      const totalLogs = USAGE_LOG.filter(x => x.token === k);
+      const emailTotal = totalLogs.filter(x => x.kind === 'email' || x.kind === 'both').length;
+      const phoneTotal = totalLogs.filter(x => x.kind === 'phone' || x.kind === 'both').length;
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: emailTotal, phone_total: phoneTotal, created: t.created, active: t.active !== false };
     });
     const envTokens = TOKENS.map((k, i) => ({ key: k, name: '环境变量口令 #' + (i + 1), email_limit: 0, phone_limit: 0, email_used: 0, phone_used: 0, created: 0, active: true, isEnv: true }));
     return json(res, 200, { ok: true, tokens: list.concat(envTokens) });
