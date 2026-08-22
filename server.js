@@ -111,6 +111,25 @@ function logUsage(req, tk, info) {
     saveJSONFile(USAGE_FILE, USAGE_LOG);
   } catch (e) {}
 }
+// 统计某口令实际查询成功数（按扣费口径: 查到才算）
+function tokenTotals(tk) {
+  const logs = USAGE_LOG.filter(x => x.token === tk);
+  let email = 0, phone = 0;
+  for (const x of logs) {
+    if (x.kind === 'email') { if (x.ok) email++; }
+    else if (x.kind === 'phone') { if (x.ok) phone++; }
+    else if (x.kind === 'both') {
+      if (x.em_ok !== undefined) { if (x.em_ok) email++; if (x.ph_ok) phone++; }
+      else { // 旧日志兼容: 按 email/phone 字段是否有值
+        if (x.email && x.email.trim()) email++;
+        if (x.phone && x.phone.trim()) phone++;
+      }
+    }
+    // batch 等不统计
+  }
+  return { email_total: email, phone_total: phone };
+}
+
 // 检查 token 当日邮箱/电话额度
 function tokenQuotaOK(tk, kind) {
   const t = tokenUsage(tk);
@@ -539,11 +558,9 @@ const server = http.createServer(async (req, res) => {
     const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
     const tu = tokenUsage(tk);
     const isMaster = masterOK(req, u);
-    // 该口令累计查询数（从 usage 日志统计, 跨天累加）
-    const totalLogs = USAGE_LOG.filter(x => x.token === tk);
-    const emailTotal = totalLogs.filter(x => x.kind === 'email' || x.kind === 'both').length;
-    const phoneTotal = totalLogs.filter(x => x.kind === 'phone' || x.kind === 'both').length;
-    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, email_total: emailTotal, phone_total: phoneTotal, name: tu.name || '' } : null;
+    // 该口令累计实际查询数（按查到算, 跨天累加）
+    const totals = tokenTotals(tk);
+    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, email_total: totals.email_total, phone_total: totals.phone_total, name: tu.name || '' } : null;
     // 客户: 只返回自己的额度; 管理员: 额外返回全局账号池
     if (!isMaster) {
       return json(res, 200, { ok: true, resets: 'daily', me: my, is_master: false });
@@ -610,9 +627,11 @@ const server = http.createServer(async (req, res) => {
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
     const [em, ph] = await Promise.all([enqueue(() => lookupOne(item)), enqueue(() => lookupPhone(item))]);
-    if (em.ok && em.emails && em.emails.length > 0) consumeQuota(tk, 'email');
-    if (ph.ok && ph.phone) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
+    const em_ok = !!(em.ok && em.emails && em.emails.length > 0);
+    const ph_ok = !!(ph.ok && ph.phone);
+    if (em_ok) consumeQuota(tk, 'email');
+    if (ph_ok) consumeQuota(tk, 'phone');
+    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), em_ok, ph_ok, email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
     const phoneList = ph.ok ? (ph.phones && ph.phones.length ? ph.phones : (ph.phone ? [ph.phone] : [])) : [];
     return json(res, 200, { code: 0, data: {
       ok: em.ok || ph.ok,
@@ -662,11 +681,9 @@ const server = http.createServer(async (req, res) => {
     const today = dayKey();
     const list = Object.keys(CUSTOM_TOKENS).map(k => {
       const t = CUSTOM_TOKENS[k];
-      // 累计查询数（从 usage 日志统计）
-      const totalLogs = USAGE_LOG.filter(x => x.token === k);
-      const emailTotal = totalLogs.filter(x => x.kind === 'email' || x.kind === 'both').length;
-      const phoneTotal = totalLogs.filter(x => x.kind === 'phone' || x.kind === 'both').length;
-      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: emailTotal, phone_total: phoneTotal, created: t.created, active: t.active !== false };
+      // 累计实际查询数（按查到算）
+      const totals = tokenTotals(k);
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: totals.email_total, phone_total: totals.phone_total, created: t.created, active: t.active !== false };
     });
     const envTokens = TOKENS.map((k, i) => ({ key: k, name: '环境变量口令 #' + (i + 1), email_limit: 0, phone_limit: 0, email_used: 0, phone_used: 0, created: 0, active: true, isEnv: true }));
     return json(res, 200, { ok: true, tokens: list.concat(envTokens) });
