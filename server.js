@@ -539,7 +539,11 @@ const server = http.createServer(async (req, res) => {
     const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
     const tu = tokenUsage(tk);
     const isMaster = masterOK(req, u);
-    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, name: tu.name || '' } : null;
+    // 该口令累计查询数（从 usage 日志统计, 跨天累加）
+    const totalLogs = USAGE_LOG.filter(x => x.token === tk);
+    const emailTotal = totalLogs.filter(x => x.kind === 'email' || x.kind === 'both').length;
+    const phoneTotal = totalLogs.filter(x => x.kind === 'phone' || x.kind === 'both').length;
+    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, email_total: emailTotal, phone_total: phoneTotal, name: tu.name || '' } : null;
     // 客户: 只返回自己的额度; 管理员: 额外返回全局账号池
     if (!isMaster) {
       return json(res, 200, { ok: true, resets: 'daily', me: my, is_master: false });
