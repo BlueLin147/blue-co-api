@@ -59,16 +59,17 @@
   </div>
 
   <div class="card">
-    <h3>🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span>
-      <button class="sm gh" onclick="toggleAllWarmup(true)" style="float:right;margin-left:6px">展开全部</button>
-      <button class="sm gh" onclick="toggleAllWarmup(false)" style="float:right">折叠全部</button>
+    <h3 style="cursor:pointer" onclick="toggleWarmupCard()">🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span>
+      <span id="warmupCardArr" style="float:right;color:var(--muted)">▼</span>
     </h3>
+    <div id="warmupCardBody">
     <div id="warmupAlert" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:13px">
       <b style="color:#b91c1c">⚠️ 有账号 Cookie 失效！</b><br>
       <span class="st">请运行本地续期脚本：<code>node ~/Desktop/DS工作台/scripts/contactout_keepalive.js</code>，然后把生成的 <code>SESSIONS_JSON_latest.txt</code> 内容更新到 Render 环境变量 SESSIONS_JSON，再点 <button class="sm gh" onclick="redeploy()">重新部署</button> 或等待自动部署。</span>
     </div>
     <div id="warmupGroups" style="margin-bottom:8px"><span class="st">加载中...</span></div>
     <div id="warmupList" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -332,6 +333,15 @@ function toggleAllWarmup(open) {
     const head = b.previousSibling;
     if (head) { const arr = head.querySelector('span[id^="arr_"]'); if (arr) arr.textContent = open ? '▼' : '▶'; }
   });
+}
+// 整卡折叠: 账号 Cookie 状态
+function toggleWarmupCard() {
+  const body = document.getElementById('warmupCardBody');
+  const arr = document.getElementById('warmupCardArr');
+  if (!body || !arr) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  arr.textContent = isOpen ? '▶' : '▼';
 }
 function redeploy() { toast('请在 Render Dashboard 手动触发 Deploy（环境变量已更新后）'); }
 
