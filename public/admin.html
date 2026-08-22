@@ -59,12 +59,16 @@
   </div>
 
   <div class="card">
-    <h3>🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span></h3>
+    <h3>🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span>
+      <button class="sm gh" onclick="toggleAllWarmup(true)" style="float:right;margin-left:6px">展开全部</button>
+      <button class="sm gh" onclick="toggleAllWarmup(false)" style="float:right">折叠全部</button>
+    </h3>
     <div id="warmupAlert" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:13px">
       <b style="color:#b91c1c">⚠️ 有账号 Cookie 失效！</b><br>
       <span class="st">请运行本地续期脚本：<code>node ~/Desktop/DS工作台/scripts/contactout_keepalive.js</code>，然后把生成的 <code>SESSIONS_JSON_latest.txt</code> 内容更新到 Render 环境变量 SESSIONS_JSON，再点 <button class="sm gh" onclick="redeploy()">重新部署</button> 或等待自动部署。</span>
     </div>
-    <div id="warmupList" style="display:flex;flex-wrap:wrap;gap:8px"><span class="st">加载中...</span></div>
+    <div id="warmupGroups" style="margin-bottom:8px"><span class="st">加载中...</span></div>
+    <div id="warmupList" style="display:flex;flex-wrap:wrap;gap:8px"></div>
   </div>
 
   <div class="card">
@@ -267,17 +271,67 @@ async function loadWarmup() {
     const bad = j.bad || [];
     document.getElementById('warmupAlert').style.display = bad.length ? 'block' : 'none';
     const list = document.getElementById('warmupList');
+    const groups = document.getElementById('warmupGroups');
     list.innerHTML = '';
+    groups.innerHTML = '';
+    // 按域名分组
+    const byDomain = {};
     for (const a of (j.accounts || [])) {
-      const isBad = a.lastWarmupBad;
-      const el = document.createElement('div');
-      el.style.cssText = 'background:' + (isBad ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (isBad ? '#fecaca' : '#bbf7d0') + ';border-radius:10px;padding:8px 12px;font-size:12px';
-      el.innerHTML = '<b>' + esc(a.email.split('@')[0]) + '</b> <span class="st">' + esc(a.email.split('@')[1]) + '</span><br>' +
-        (isBad ? '<span style="color:#b91c1c">❌ ' + esc(isBad) + '</span>' : '<span style="color:#15803d">✅ 正常</span>') +
-        ' <span class="st">邮箱' + (a.credit ?? '-') + ' 电话' + (a.phoneCredit ?? '-') + '</span>';
-      list.appendChild(el);
+      const dom = a.email.split('@')[1] || '?';
+      (byDomain[dom] = byDomain[dom] || []).push(a);
+    }
+    const doms = Object.keys(byDomain).sort((x, y) => byDomain[y].length - byDomain[x].length);
+    // 摘要
+    const badAll = (j.bad || []).map(b => b.email);
+    const badCount = j.bad ? j.bad.length : 0;
+    const sum = document.createElement('div');
+    sum.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:8px';
+    sum.innerHTML = '📊 共 <b>' + (j.accounts ? j.accounts.length : 0) + '</b> 个账号 · ' + doms.length + ' 个域名 · ' +
+      (badCount ? '<span style="color:#b91c1c">失效 ' + badCount + '</span>' : '<span style="color:#15803d">全部正常 ✅</span>');
+    groups.appendChild(sum);
+    // 域名组
+    for (const dom of doms) {
+      const accs = byDomain[dom];
+      const domBad = accs.filter(a => a.lastWarmupBad).length;
+      const grp = document.createElement('div');
+      grp.style.cssText = 'border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;overflow:hidden';
+      const head = document.createElement('div');
+      head.style.cssText = 'padding:8px 12px;background:' + (domBad ? '#fef2f2' : '#f9fafb') + ';cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center';
+      head.innerHTML = '<span><b>' + esc(dom) + '</b> <span class="st">(' + accs.length + '个)</span>' +
+        (domBad ? ' <span style="color:#b91c1c">⚠️ 失效 ' + domBad + '</span>' : ' <span style="color:#15803d">✅</span>') + '</span>' +
+        '<span class="st" id="arr_' + dom.replace(/[^a-z0-9]/gi, '_') + '">▶</span>';
+      const body = document.createElement('div');
+      body.id = 'grp_' + dom.replace(/[^a-z0-9]/gi, '_');
+      body.style.cssText = 'display:none;padding:8px;background:#fff';
+      body.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px"></div>';
+      const inner = body.firstChild;
+      for (const a of accs) {
+        const isBad = a.lastWarmupBad;
+        const el = document.createElement('div');
+        el.style.cssText = 'background:' + (isBad ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (isBad ? '#fecaca' : '#bbf7d0') + ';border-radius:8px;padding:6px 10px;font-size:12px';
+        el.innerHTML = '<b>' + esc(a.email.split('@')[0]) + '</b><br>' +
+          (isBad ? '<span style="color:#b91c1c">❌ ' + esc(isBad) + '</span>' : '<span style="color:#15803d">✅ 正常</span>') +
+          ' <span class="st">邮箱' + (a.credit ?? '-') + ' 电话' + (a.phoneCredit ?? '-') + '</span>';
+        inner.appendChild(el);
+      }
+      head.onclick = () => {
+        const arr = head.querySelector('span[id^="arr_"]');
+        const isOpen = body.style.display !== 'none';
+        body.style.display = isOpen ? 'none' : 'block';
+        if (arr) arr.textContent = isOpen ? '▶' : '▼';
+      };
+      grp.appendChild(head);
+      grp.appendChild(body);
+      groups.appendChild(grp);
     }
   } catch (e) { /* 忽略 */ }
+}
+function toggleAllWarmup(open) {
+  document.querySelectorAll('#warmupGroups [id^="grp_"]').forEach(b => {
+    b.style.display = open ? 'block' : 'none';
+    const head = b.previousSibling;
+    if (head) { const arr = head.querySelector('span[id^="arr_"]'); if (arr) arr.textContent = open ? '▼' : '▶'; }
+  });
 }
 function redeploy() { toast('请在 Render Dashboard 手动触发 Deploy（环境变量已更新后）'); }
 
