@@ -157,10 +157,18 @@ async function gistLoadSessions() {
   const gid = process.env.SESSIONS_GIST || '';
   if (!gid) return false;
   try {
-    const r = await fetch(`https://api.github.com/gists/${gid}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
-    const j = await r.json();
-    if (j.files && j.files['sessions.json']) {
-      const arr = JSON.parse(j.files['sessions.json'].content);
+    // 用 raw_url 下载, 避免 GitHub API 对超大 content 的截断 (truncated)
+    const metaR = await fetch(`https://api.github.com/gists/${gid}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+    const meta = await metaR.json();
+    const file = meta.files && meta.files['sessions.json'];
+    if (file) {
+      const rawUrl = file.raw_url;
+      if (rawUrl) {
+        const rawR = await fetch(rawUrl);
+        const arr = JSON.parse(await rawR.text());
+        if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+      }
+      const arr = JSON.parse(file.content);
       if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
     }
   } catch (e) { console.error('Gist sessions 加载失败:', e.message); }
