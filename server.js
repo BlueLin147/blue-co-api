@@ -843,22 +843,30 @@ const server = http.createServer(async (req, res) => {
     const today = dayKey();
     const list = Object.keys(SUBADMINS).map(sid => {
       const s = SUBADMINS[sid];
-      return { sid, name: s.name, email_limit: s.email_limit || 0, phone_limit: s.phone_limit || 0,
+      return { sid, name: s.name, password: s.password, email_limit: s.email_limit || 0, phone_limit: s.phone_limit || 0,
         email_used: s.day === today ? (s.email_used || 0) : 0, phone_used: s.day === today ? (s.phone_used || 0) : 0,
         tokens: Object.keys(s.tokens || {}).length, created: s.created, active: s.active !== false };
     });
     return json(res, 200, { ok: true, subadmins: list });
   }
-  // POST /admin/api/subadmins  主管理员: 创建子管理员 {"name":"代理A","email_limit":1170,"phone_limit":1170}
+  // POST /admin/api/subadmins  主管理员: 创建子管理员 {"name":"代理A","password":"123456","email_limit":1170,"phone_limit":1170}
   if (p === '/admin/api/subadmins' && req.method === 'POST') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const bodyTxt = await readBody(req);
     let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
     const sid = 'sub_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const password = body.password || (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8));
+    const password = String(body.password || '').trim() || (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8));
     SUBADMINS[sid] = { name: String(body.name || '子管理员').slice(0, 50), password, email_limit: parseInt(body.email_limit, 10) || 1170, phone_limit: parseInt(body.phone_limit, 10) || 1170, email_used: 0, phone_used: 0, day: dayKey(), created: Date.now(), active: true, tokens: {} };
     saveJSONFile(SUBADMIN_FILE, SUBADMINS);
     return json(res, 200, { ok: true, sid, password, ...SUBADMINS[sid] });
+  }
+  // POST /admin/api/subadmins/password  主管理员: 改子管理员密码
+  if (p === '/admin/api/subadmins/password') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    if (!String(body.password || '').trim()) return json(res, 400, { error: 'password required' });
+    s.password = String(body.password).trim(); saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true, password: s.password });
   }
   // POST /admin/api/subadmins/toggle / limit / delete / reset
   if (p === '/admin/api/subadmins/toggle') {
