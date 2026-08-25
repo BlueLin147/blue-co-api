@@ -887,6 +887,62 @@ const server = http.createServer(async (req, res) => {
     s.email_used = 0; s.phone_used = 0; s.day = dayKey(); saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
   }
 
+  // ============ 主管理员管理子管理员的口令 ============
+  // GET /admin/api/subadmins/tokens?sid=xxx  列出该子管理员所有口令
+  if (p === '/admin/api/subadmins/tokens' && req.method !== 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const s = SUBADMINS[u.searchParams.get('sid') || ''];
+    if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const today = dayKey();
+    const list = Object.keys(s.tokens || {}).map(k => {
+      const t = s.tokens[k];
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0,
+        email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0,
+        email_total: tokenTotals(k).email_total, phone_total: tokenTotals(k).phone_total,
+        created: t.created, active: t.active !== false };
+    });
+    return json(res, 200, { ok: true, sid: s.sid, name: s.name, tokens: list });
+  }
+  // POST /admin/api/subadmins/tokens  主管理员直接给子管理员建口令
+  if (p === '/admin/api/subadmins/tokens' && req.method === 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid];
+    if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const cnt = Object.keys(s.tokens || {}).length;
+    if (cnt >= 30) return json(res, 429, { error: 'token limit', msg: '该子管理员口令已达 30 个上限' });
+    const key = genTokenKey();
+    if (!s.tokens) s.tokens = {};
+    s.tokens[key] = { name: String(body.name || '客户').slice(0, 50), email_limit: parseInt(body.email_limit, 10) || 0, phone_limit: parseInt(body.phone_limit, 10) || 0, email_used: 0, phone_used: 0, day: dayKey(), created: Date.now(), active: true };
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS);
+    return json(res, 200, { ok: true, sid: s.sid, token: key, ...s.tokens[key] });
+  }
+  // POST /admin/api/subadmins/tokens/toggle 主管理员停用/启用子管理员的口令
+  if (p === '/admin/api/subadmins/tokens/toggle') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    t.active = body.active !== false; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  // POST /admin/api/subadmins/tokens/limit 主管理员改子管理员口令限额
+  if (p === '/admin/api/subadmins/tokens/limit') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    if (body.email_limit !== undefined) t.email_limit = parseInt(body.email_limit, 10) || 0;
+    if (body.phone_limit !== undefined) t.phone_limit = parseInt(body.phone_limit, 10) || 0;
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  // POST /admin/api/subadmins/tokens/delete 主管理员删除子管理员口令
+  if (p === '/admin/api/subadmins/tokens/delete') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    delete s.tokens[body.key]; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+
   // ============ 子管理员自助端点 (子管理员登录后) ============
   // GET /sub/api/me  登录后拿自己信息+今日额度
   if (p === '/sub/api/me') {
