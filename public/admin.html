@@ -76,6 +76,7 @@
     <h3>👥 子管理员管理 <span class="st">(每个子管理员 1170 邮箱+1170 电话/天, 可自建 30 个口令)</span></h3>
     <div class="row">
       <div class="fld"><label>子管理员名称</label><input id="subName" placeholder="代理A"></div>
+      <div class="fld"><label>密码（留空自动生成）</label><input id="subPassword" placeholder="如 123456"></div>
       <div class="fld"><label>每日邮箱额度</label><input id="subEmailLimit" type="number" value="1170" min="0"></div>
       <div class="fld"><label>每日电话额度</label><input id="subPhoneLimit" type="number" value="1170" min="0"></div>
       <button id="subCreateBtn">＋ 创建子管理员</button>
@@ -391,13 +392,13 @@ async function loadSubAdmins() {
       tr.innerHTML =
         '<td><b>' + esc(s.name) + '</b></td>' +
         '<td class="key">' + esc(s.sid) + '</td>' +
-        '<td class="key">' + esc(s.password || '-') + ' <button class="gh sm" onclick="copyText(\'' + esc(s.sid) + ' / ' + esc(s.password || '') + '\')">复制</button></td>' +
-        '<td>' + (s.email_limit || '∞') + ' / ' + (s.phone_limit || '∞') + '</td>' +
+        '<td class="key">' + esc(s.password || '-') + ' <button class="gh sm" onclick="copyText(\'' + esc(s.sid) + ' / ' + esc(s.password || '') + '\')">复制</button></td>' +        '<td>' + (s.email_limit || '∞') + ' / ' + (s.phone_limit || '∞') + '</td>' +
         '<td>' + s.email_used + ' / ' + s.phone_used + '</td>' +
         '<td>' + s.tokens + '</td>' +
         '<td>' + (s.active ? '<span class="tag on">启用</span>' : '<span class="tag off">停用</span>') + '</td>' +
         '<td style="white-space:nowrap">' +
           '<button class="gh sm" onclick="openSubTokens(\'' + s.sid + '\',\'' + s.name + '\')">口令</button> ' +
+          '<button class="gh sm" onclick="changeSubPw(\'' + s.sid + '\',\'' + s.name + '\')">改密码</button> ' +
           '<button class="gh sm" onclick="editSubLimit(\'' + s.sid + '\',\'' + s.name + '\',' + (s.email_limit || 0) + ',' + (s.phone_limit || 0) + ')">限额</button> ' +
           '<button class="gh sm" onclick="resetSub(\'' + s.sid + '\')">重置</button> ' +
           '<button class="' + (s.active ? 'red' : 'gh') + ' sm" onclick="toggleSub(\'' + s.sid + '\',' + (!s.active) + ')">' + (s.active ? '停用' : '启用') + '</button> ' +
@@ -411,6 +412,11 @@ function copyText(t) { navigator.clipboard.writeText(t); toast('已复制'); }
 function toggleSub(sid, active) { api('/admin/api/subadmins/toggle', { method: 'POST', body: JSON.stringify({ sid, active }) }).then(() => { toast(active ? '已启用' : '已停用'); loadSubAdmins(); }).catch(e => toast(e.message)); }
 function delSub(sid) { if (!confirm('确定删除该子管理员？其所有口令将失效！')) return; api('/admin/api/subadmins/delete', { method: 'POST', body: JSON.stringify({ sid }) }).then(() => { toast('已删除'); loadSubAdmins(); }).catch(e => toast(e.message)); }
 function resetSub(sid) { if (!confirm('确定重置该子管理员今日用量？')) return; api('/admin/api/subadmins/reset', { method: 'POST', body: JSON.stringify({ sid }) }).then(() => { toast('已重置'); loadSubAdmins(); }).catch(e => toast(e.message)); }
+function changeSubPw(sid, name) {
+  const np = prompt('设置 ' + name + ' 的新密码:', '');
+  if (np === null || !np.trim()) { toast('密码不能为空'); return; }
+  api('/admin/api/subadmins/password', { method: 'POST', body: JSON.stringify({ sid, password: np.trim() }) }).then(() => { toast('✅ 密码已更新'); loadSubAdmins(); }).catch(e => toast(e.message));
+}
 function editSubLimit(sid, name, el, pl) {
   const ne = prompt('设置 ' + name + ' 每日邮箱额度 (0=不限):', el);
   if (ne === null) return;
@@ -474,10 +480,11 @@ document.getElementById('stCreateBtn').onclick = () => {
 };
 document.getElementById('subCreateBtn').onclick = () => {
   const name = document.getElementById('subName').value.trim() || '子管理员';
+  const pw = document.getElementById('subPassword').value.trim();
   const el = parseInt(document.getElementById('subEmailLimit').value, 10) || 1170;
   const pl = parseInt(document.getElementById('subPhoneLimit').value, 10) || 1170;
-  api('/admin/api/subadmins', { method: 'POST', body: JSON.stringify({ name, email_limit: el, phone_limit: pl }) })
-    .then(j => { toast('创建成功! ID: ' + j.sid + ' 密码: ' + j.password); loadSubAdmins(); document.getElementById('subName').value = ''; })
+  api('/admin/api/subadmins', { method: 'POST', body: JSON.stringify({ name, password: pw, email_limit: el, phone_limit: pl }) })
+    .then(j => { toast('创建成功! ID: ' + j.sid + ' 密码: ' + j.password); loadSubAdmins(); document.getElementById('subName').value = ''; document.getElementById('subPassword').value = ''; })
     .catch(e => toast(e.message));
 };
 
