@@ -613,7 +613,7 @@ function serveSubAdmin(res) {
   try {
     res.statusCode = 200;
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    return res.end(fs.readFileSync(path.join(__dirname, 'contactout_subadmin.html')));
+    return res.end(fs.readFileSync(path.join(__dirname, 'public', 'contactout_subadmin.html')));
   } catch (e) {
     return json(res, 500, { error: 'subadmin.html missing: ' + e.message });
   }
