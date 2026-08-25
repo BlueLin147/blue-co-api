@@ -287,7 +287,11 @@ function exportCSV() {
   document.querySelectorAll('#tbody tr').forEach(tr => {
     const tds = tr.querySelectorAll('td');
     if (tds.length >= 4) {
-      rows.push([tds[1].textContent, tds[2].textContent, tds[3].textContent]);
+      const emDivs = tds[2].querySelectorAll('.em');
+      const phDivs = tds[3].querySelectorAll('.ph');
+      const emails = emDivs.length ? Array.from(emDivs).map(d => d.textContent.trim()).join('; ') : (tds[2].textContent.trim() === '—' ? '' : tds[2].textContent.trim());
+      const phones = phDivs.length ? Array.from(phDivs).map(d => d.textContent.trim()).join('; ') : (tds[3].textContent.trim() === '—' ? '' : tds[3].textContent.trim());
+      rows.push([tds[1].textContent.trim(), emails, phones]);
     }
   });
   const csv = '\ufeff' + rows.map(r => r.map(v => '"' + v.replace(/"/g, '""') + '"').join(',')).join('\n');
