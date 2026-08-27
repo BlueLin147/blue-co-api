@@ -45,7 +45,7 @@ function saveJSONFile(file, data) {
 CUSTOM_TOKENS = loadJSONFile(TOKENS_FILE, {});
 SUBADMINS = loadJSONFile(SUBADMIN_FILE, {});
 USAGE_LOG = loadJSONFile(USAGE_FILE, []);
-if (USAGE_LOG.length > 20000) USAGE_LOG = USAGE_LOG.slice(-20000); // 只留最近 2 万条
+if (USAGE_LOG.length > 50000) USAGE_LOG = USAGE_LOG.slice(-50000); // 只留最近 2 万条
 
 // —— Gist 持久化 (Render 免费档无持久磁盘, 用 GitHub Gist 存 tokens+usage) ——
 // 环境变量: GIST_TOKEN (GitHub PAT), GIST_ID (gist id), 文件: tokens.json + usage.json
@@ -58,7 +58,7 @@ async function gistPush(force) {
   _gistDebounce = null;
   const doPush = async () => {
     try {
-      const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-20000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
+      const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-50000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
       await fetch(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH', headers: { 'Authorization': 'token ' + GIST_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -76,7 +76,7 @@ async function gistPull() {
       try { CUSTOM_TOKENS = JSON.parse(j.files['tokens.json'].content); } catch (e) {}
     }
     if (j.files && j.files['usage.json'] && USAGE_LOG.length === 0) {
-      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-20000); } catch (e) {}
+      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-50000); } catch (e) {}
     }
     if (j.files && j.files['subadmins.json'] && Object.keys(SUBADMINS).length === 0) {
       try { SUBADMINS = JSON.parse(j.files['subadmins.json'].content); } catch (e) {}
@@ -86,12 +86,17 @@ async function gistPull() {
 
 function dayKey() { return new Date().toISOString().slice(0, 10); }
 
-// 每日用量重置（按天滚动）
+// 每日用量重置（按天滚动）; 永久累计字段 email_total_used/phone_total_used 不重置
 function tokenUsage(tk) {
   const d = dayKey();
   const t = CUSTOM_TOKENS[tk];
   if (!t) return null;
-  if (t.day !== d) { t.day = d; t.email_used = 0; t.phone_used = 0; saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
+  if (t.day !== d) {
+    // 把当日用量累加到永久累计
+    t.email_total_used = (t.email_total_used || 0) + (t.email_used || 0);
+    t.phone_total_used = (t.phone_total_used || 0) + (t.phone_used || 0);
+    t.day = d; t.email_used = 0; t.phone_used = 0; saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
+  }
   return t;
 }
 function tokenOK(req, u) {
@@ -143,7 +148,7 @@ function logUsage(req, tk, info) {
       else { uname = (owner.t.name || 'token'); usub = (owner.s.name || owner.sid); }
     }
     USAGE_LOG.push(Object.assign({ ts: Date.now(), token: tk, name: uname, sub: usub, ip: (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress }, info));
-    if (USAGE_LOG.length > 20000) USAGE_LOG = USAGE_LOG.slice(-20000);
+    if (USAGE_LOG.length > 50000) USAGE_LOG = USAGE_LOG.slice(-50000);
     saveJSONFile(USAGE_FILE, USAGE_LOG);
   } catch (e) {}
 }
@@ -196,18 +201,18 @@ function consumeQuota(tk, kind, n = 1) {
   const owner = tokenOwner(tk);
   if (owner && owner.type === 'sub') {
     const s = owner.s;
-    if (kind === 'email') s.email_used = (s.email_used || 0) + n;
-    else s.phone_used = (s.phone_used || 0) + n;
+    if (kind === 'email') { s.email_used = (s.email_used || 0) + n; s.email_total_used = (s.email_total_used || 0) + n; }
+    else { s.phone_used = (s.phone_used || 0) + n; s.phone_total_used = (s.phone_total_used || 0) + n; }
     const t = owner.t;
-    if (kind === 'email') t.email_used = (t.email_used || 0) + n;
-    else t.phone_used = (t.phone_used || 0) + n;
+    if (kind === 'email') { t.email_used = (t.email_used || 0) + n; t.email_total_used = (t.email_total_used || 0) + n; }
+    else { t.phone_used = (t.phone_used || 0) + n; t.phone_total_used = (t.phone_total_used || 0) + n; }
     saveJSONFile(SUBADMIN_FILE, SUBADMINS);
     return;
   }
   const t = tokenUsage(tk);
   if (!t) return;
-  if (kind === 'email') t.email_used = (t.email_used || 0) + n;
-  else t.phone_used = (t.phone_used || 0) + n;
+  if (kind === 'email') { t.email_used = (t.email_used || 0) + n; t.email_total_used = (t.email_total_used || 0) + n; }
+  else { t.phone_used = (t.phone_used || 0) + n; t.phone_total_used = (t.phone_total_used || 0) + n; }
   saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
 }
 function genTokenKey() {
@@ -757,14 +762,16 @@ const server = http.createServer(async (req, res) => {
 
   // ============ 管理后台端点 (需 master token) ============
   // GET /admin/api/tokens  列出所有口令+用量
-  if (p === '/admin/api/tokens' && req.method !== 'POST') {
+   if (p === '/admin/api/tokens' && req.method !== 'POST') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const today = dayKey();
     const list = Object.keys(CUSTOM_TOKENS).map(k => {
       const t = CUSTOM_TOKENS[k];
-      // 累计实际查询数（按查到算）
+      // 累计实际查询数（优先永久累计字段, 兜底日志计算）
       const totals = tokenTotals(k);
-      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: totals.email_total, phone_total: totals.phone_total, created: t.created, active: t.active !== false };
+      const et = t.email_total_used || totals.email_total || 0;
+      const pt = t.phone_total_used || totals.phone_total || 0;
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: et, phone_total: pt, created: t.created, active: t.active !== false };
     });
     const envTokens = TOKENS.map((k, i) => ({ key: k, name: '环境变量口令 #' + (i + 1), email_limit: 0, phone_limit: 0, email_used: 0, phone_used: 0, created: 0, active: true, isEnv: true }));
     return json(res, 200, { ok: true, tokens: list.concat(envTokens) });
@@ -830,7 +837,7 @@ const server = http.createServer(async (req, res) => {
     const data = body.data || body;
     if (!data || (!data.tokens && !data.usage)) return json(res, 400, { error: 'invalid backup data', hint: 'POST JSON {"data": <备份文件内容>}' });
     if (data.tokens) { CUSTOM_TOKENS = Object.assign({}, data.tokens); saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
-    if (data.usage) { USAGE_LOG = data.usage.slice(-20000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
+    if (data.usage) { USAGE_LOG = data.usage.slice(-50000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
     return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
   }
 
@@ -845,6 +852,7 @@ const server = http.createServer(async (req, res) => {
       const s = SUBADMINS[sid];
       return { sid, name: s.name, password: s.password, email_limit: s.email_limit || 0, phone_limit: s.phone_limit || 0,
         email_used: s.day === today ? (s.email_used || 0) : 0, phone_used: s.day === today ? (s.phone_used || 0) : 0,
+        email_total: s.email_total_used || 0, phone_total: s.phone_total_used || 0,
         tokens: Object.keys(s.tokens || {}).length, created: s.created, active: s.active !== false };
     });
     return json(res, 200, { ok: true, subadmins: list });
@@ -956,9 +964,10 @@ const server = http.createServer(async (req, res) => {
   if (p === '/sub/api/me') {
     const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
     const d = dayKey();
-    if (s.day !== d) { s.day = d; s.email_used = 0; s.phone_used = 0; }
+    if (s.day !== d) { s.email_total_used = (s.email_total_used || 0) + (s.email_used || 0); s.phone_total_used = (s.phone_total_used || 0) + (s.phone_used || 0); s.day = d; s.email_used = 0; s.phone_used = 0; saveJSONFile(SUBADMIN_FILE, SUBADMINS); }
     return json(res, 200, { ok: true, sid: u.searchParams.get('admin') || req.headers['x-co-admin'], name: s.name,
       email_limit: s.email_limit || 0, email_used: s.email_used || 0, phone_limit: s.phone_limit || 0, phone_used: s.phone_used || 0,
+      email_total: s.email_total_used || 0, phone_total: s.phone_total_used || 0,
       resets: 'daily' });
   }
   // GET /sub/api/tokens  子管理员: 列出自己的口令
@@ -970,6 +979,7 @@ const server = http.createServer(async (req, res) => {
       const t = s.tokens[k];
       return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0,
         email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0,
+        email_total: t.email_total_used || 0, phone_total: t.phone_total_used || 0,
         created: t.created, active: t.active !== false };
     });
     return json(res, 200, { ok: true, sid, tokens: list });
