@@ -394,6 +394,7 @@ async function revealWithAccount(session, item) {
       'Cookie': session.cookie,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8000),
   });
   const text = await res.text();
   let data = null;
@@ -401,9 +402,10 @@ async function revealWithAccount(session, item) {
   return { status: res.status, data, text };
 }
 
-// 单条查询: 失败/受限换账号重试
+// 单条查询: 失败/受限换账号重试 (受限 profile 全场锁死, 试 MAX_ACCT_ATTEMPTS 个账号即判定, 避免全池遍历秒变分钟级)
+const MAX_ACCT_ATTEMPTS = 12;
 async function lookupOne(item) {
-  const attempts = SESSIONS.length || 1;
+  const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
     const session = await pickAccount();
@@ -472,7 +474,7 @@ async function lookupOne(item) {
 
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
 async function lookupPhone(item) {
-  const attempts = SESSIONS.length || 1;
+  const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
     // 选有电话额度的账号
@@ -505,6 +507,7 @@ async function lookupPhone(item) {
           'x-disable-message': '0',
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
       });
       const text = await r.text();
       let data = null; try { data = JSON.parse(text); } catch (e) {}
