@@ -224,17 +224,24 @@ let SESSIONS = [];
 async function gistLoadSessions() {
   const gid = process.env.SESSIONS_GIST || '';
   if (!gid) return false;
+  const fetchMeta = async (auth) => {
+    const metaR = await fetch(`https://api.github.com/gists/${gid}`, auth ? { headers: { 'Authorization': 'token ' + GIST_TOKEN } } : {});
+    if (!metaR.ok) return null;
+    return metaR.json();
+  };
   try {
     // 用 raw_url 下载, 避免 GitHub API 对超大 content 的截断 (truncated)
-    const metaR = await fetch(`https://api.github.com/gists/${gid}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
-    const meta = await metaR.json();
-    const file = meta.files && meta.files['sessions.json'];
+    let meta = await fetchMeta(true);
+    if (!meta || !(meta.files && meta.files['sessions.json'])) meta = await fetchMeta(false); // token 失效回退匿名
+    const file = meta && meta.files && meta.files['sessions.json'];
     if (file) {
       const rawUrl = file.raw_url;
       if (rawUrl) {
         const rawR = await fetch(rawUrl);
-        const arr = JSON.parse(await rawR.text());
-        if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+        if (rawR.ok) {
+          const arr = JSON.parse(await rawR.text());
+          if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+        }
       }
       const arr = JSON.parse(file.content);
       if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
