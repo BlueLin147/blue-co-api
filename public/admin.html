@@ -134,6 +134,23 @@
   </div>
 
   <div class="card">
+    <h3>🛰 询盘系统导出条数 <span class="st">（contact.blue147.cn 单家公司导出上限，默认 <span id="oqDef">500</span> 人；主口令默认 <span id="oqMasterDef">10000</span> 人）</span></h3>
+    <div class="row">
+      <div class="fld"><label>客户口令</label><input id="oqTok" placeholder="如 co_xxxxxx"></div>
+      <div class="fld"><label>导出条数上限</label><input id="oqLim" type="number" value="1000" min="1" placeholder="如 1000 / 5000"></div>
+      <button id="oqSetBtn">＋ 设置</button>
+      <button class="gh" id="oqRefreshBtn">刷新</button>
+    </div>
+    <div style="overflow-x:auto;margin-top:10px">
+      <table id="oqTbl">
+        <thead><tr><th>口令</th><th>导出上限</th><th>操作</th></tr></thead>
+        <tbody id="oqBody"><tr><td colspan="3" class="st" style="text-align:center;padding:12px">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="st" id="oqMsg"></div>
+  </div>
+
+  <div class="card">
     <h3>💾 数据备份 <span class="st">（Render 免费档重启会清空数据，建议定期备份）</span></h3>
     <div class="row">
       <button id="backupBtn">⬇ 下载完整备份</button>
@@ -521,11 +538,50 @@ document.getElementById('createBtn').onclick = () => {
     .then(j => { toast('创建成功! 口令: ' + j.token); loadTokens(); document.getElementById('newName').value = ''; })
     .catch(e => toast(e.message));
 };
+
+// —— 询盘系统导出条数 (contact.blue147.cn) ——
+const OQ_API = 'https://contact.blue147.cn/api/v1/quota';
+async function oqApi(path, opts) {
+  const r = await fetch(OQ_API + path, Object.assign({ headers: MASTER ? { 'content-type': 'application/json', 'x-co-token': MASTER } : { 'content-type': 'application/json' } }, opts || {}));
+  if (r.status === 403) throw new Error('需要主口令权限（blue-admin-2026）');
+  return r.json();
+}
+async function loadOq() {
+  const msg = document.getElementById('oqMsg');
+  try {
+    const j = await oqApi('');
+    document.getElementById('oqDef').textContent = j.default;
+    const tb = document.getElementById('oqBody');
+    tb.innerHTML = (j.quotas || []).map(q =>
+      '<tr><td><code>' + q.token + '</code></td><td><b>' + q.limit + '</b> 人</td>' +
+      '<td><button class="gh" onclick="oqDel(\'' + q.token + '\')">删除</button></td></tr>').join('')
+      || '<tr><td colspan="3" class="st" style="text-align:center;padding:12px">暂无单独授权（全部默认 ' + j.default + ' 人）</td></tr>';
+    msg.textContent = '';
+  } catch (e) { msg.textContent = '❌ ' + e.message; }
+}
+async function oqSet() {
+  const msg = document.getElementById('oqMsg');
+  const tk = document.getElementById('oqTok').value.trim();
+  const lim = parseInt(document.getElementById('oqLim').value, 10) || 0;
+  if (!tk || lim <= 0) { msg.textContent = '❌ 请填口令和条数(>0)'; return; }
+  try {
+    const j = await oqApi('', { method: 'POST', body: JSON.stringify({ token: tk, limit: lim }) });
+    msg.textContent = '✅ 已设置 ' + tk + ' 导出上限 ' + j.limit + ' 人';
+    document.getElementById('oqTok').value = ''; loadOq();
+  } catch (e) { msg.textContent = '❌ ' + e.message; }
+}
+async function oqDel(tk) {
+  if (!confirm('删除 ' + tk + ' 的授权？将回到默认 500')) return;
+  try { await oqApi('', { method: 'POST', body: JSON.stringify({ token: tk, limit: 0 }) }); loadOq(); }
+  catch (e) { document.getElementById('oqMsg').textContent = '❌ ' + e.message; }
+}
+document.getElementById('oqSetBtn').onclick = oqSet;
+document.getElementById('oqRefreshBtn').onclick = loadOq;
 document.getElementById('refreshLog').onclick = loadUsage;
 document.getElementById('logToken').onchange = loadUsage;
 document.getElementById('logDays').onchange = loadUsage;
 
-loadStats(); loadTokens(); loadUsage(); loadWarmup(); loadSubAdmins();
+loadStats(); loadTokens(); loadUsage(); loadWarmup(); loadSubAdmins(); loadOq();
 setInterval(loadStats, 30000);
 setInterval(loadWarmup, 60000);
 </script>
