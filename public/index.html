@@ -1,308 +1,471 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Blue 的关键决策人查询系统</title>
-<style>
-  :root{--indigo:#4f46e5;--indigo2:#6366f1;--ink:#0f172a;--muted:#64748b;--line:#e8eaf1;--soft:#f6f7fb;--green:#16a34a;--red:#dc2626;--amber:#d97706;}
-  *{box-sizing:border-box}
-  body{margin:0;background:linear-gradient(180deg,#eef0fb 0%,#f7f8fc 260px,#f7f8fc 100%);color:var(--ink);
-    font:14.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-    -webkit-font-smoothing:antialiased;padding:24px 16px 80px}
-  .wrap{max-width:1100px;margin:0 auto}
-  .hero{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-  .logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--indigo),var(--indigo2));display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 8px 20px rgba(79,70,229,.3);color:#fff}
-  .htxt{flex:1;min-width:0}
-  h1{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:800}
-  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}
-  .credit-pill{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 14px;display:flex;flex-direction:column;align-items:flex-end}
-  .credit-pill .n{font-size:19px;font-weight:800;color:var(--indigo);line-height:1.1}
-  .credit-pill .l{font-size:10.5px;color:var(--muted)}
-  .gear{background:#fff;border:1px solid var(--line);border-radius:12px;width:44px;height:44px;cursor:pointer;font-size:19px;color:#475569;box-shadow:0 10px 30px rgba(15,23,42,.05)}
-  .gear:hover{background:var(--soft)}
-  .mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50}
-  .mask.on{display:flex}
-  .modal{background:#fff;border-radius:16px;width:420px;max-width:92vw;padding:20px;box-shadow:0 24px 60px rgba(0,0,0,.25)}
-  .modal h3{margin:0 0 6px;font-size:16px}
-  .modal .sub2{color:var(--muted);font-size:12px;margin-bottom:14px}
-  .modal label{display:block;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px}
-  .modal input{width:100%;border:1px solid #d8dbe5;border-radius:9px;padding:9px 11px;font:13px ui-monospace,Menlo,monospace;color:var(--ink);outline:none;margin-bottom:12px}
-  .modal input:focus{border-color:var(--indigo)}
-  .modal .mrow{display:flex;gap:8px;justify-content:flex-end}
-  .msave{background:var(--indigo);color:#fff;border:0;border-radius:9px;padding:8px 18px;font-weight:600;cursor:pointer}
-  .mlight{background:#f1f3f9;color:#334155;border:1px solid #e2e6ef;border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:500}
-  .mstatus{font-size:11.5px;color:var(--muted);margin-top:4px}
-  
-  .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.05);margin-bottom:16px}
-  textarea#in{width:100%;min-height:130px;max-height:280px;resize:vertical;border:1px solid #d8dbe5;border-radius:10px;padding:11px;
-    font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--ink);outline:none}
-  textarea#in:focus{border-color:var(--indigo)}
-  .ctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:11px}
-  button.go{background:var(--indigo);color:#fff;border:0;border-radius:10px;padding:10px 22px;font-weight:600;font-size:14px;cursor:pointer;box-shadow:0 6px 16px rgba(79,70,229,.26)}
-  button.go:disabled{opacity:.6;cursor:default;box-shadow:none}
-  button.go2{background:#fff;color:var(--indigo);border:1.5px solid var(--indigo);border-radius:10px;padding:9px 18px;font-weight:600;font-size:14px;cursor:pointer}
-  button.go2:hover{background:var(--soft)}
-  button.go2:disabled{opacity:.55;cursor:default}
-  .prog{font-size:12px;color:var(--muted);margin-left:auto;text-align:right;min-height:16px;font-weight:500}
-  
-  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
-  th{text-align:left;padding:9px 10px;color:#64748b;font-weight:600;font-size:11.5px;border-bottom:1px solid #eef0f5;background:#f8fafc}
-  td{padding:9px 10px;border-bottom:1px solid #f3f5f9;vertical-align:top}
-  tr:last-child td{border-bottom:0}
-  .li{color:#1d4ed8;word-break:break-all;font-size:11.5px}
-  .em{color:#059669;word-break:break-all}
-  .ph{color:#7c3aed;word-break:break-all}
-  .empty{padding:30px;text-align:center;color:#94a3b8;font-size:13px}
-  .foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}
-  .gh{background:#f1f3f9;color:#334155;border:1px solid #e2e6ef;border-radius:9px;padding:7px 13px;font-size:12.5px;cursor:pointer;font-weight:500;transition:all .15s}
-  .gh:hover{background:#e9ecf4}
-  .gh.on{background:var(--indigo);color:#fff;border-color:var(--indigo)}
-  .stat{font-size:11.5px;margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--muted)}
-  .dot{width:8px;height:8px;border-radius:50%;background:#cbd5e1;display:inline-block}
-  .dot.ok{background:var(--green)}.dot.bad{background:var(--red)}
-  .rownum{color:#94a3b8;font-size:11px}
-  @media(max-width:640px){.credit-pill{align-items:flex-start}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23274d80'/%3E%3Ctext x='8' y='24' fill='white' font-family='sans-serif' font-size='24' font-weight='600'%3EB%3C/text%3E%3C/svg%3E">
+  <title>Blue 的关键决策人查询系统</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f7f8fa;
+      --surface: #fff;
+      --soft: #f8fafc;
+      --ink: #222d3d;
+      --muted: #667386;
+      --line: #e4e9ef;
+      --brand: #274d80;
+      --brand-hover: #1e3d67;
+      --link: #3d6093;
+      --green: #39775b;
+      --amber: #946519;
+      --red: #b24949;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; }
+    button, textarea, input { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; opacity: .45; }
+    button, a, textarea { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, .table-scroll:focus-visible { outline: 3px solid #b7cbea; outline-offset: 3px; }
+    svg.icon { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-library { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .wrap { width: min(1160px, calc(100% - 64px)); margin: 0 auto; padding: 26px 0 54px; }
+    .hero { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
+    .logo { width: 42px; height: 42px; display: grid; place-items: center; flex-shrink: 0; background: var(--brand); border-radius: 11px; color: white; }
+    .logo svg { width: 22px; height: 25px; }
+    .heading { flex: 1; min-width: 0; }
+    h1 { font-size: 23px; font-weight: 650; line-height: 1.35; letter-spacing: -.035em; margin: 0; }
+    .subtitle { margin: 5px 0 0; font-size: 12px; color: var(--muted); }
+    .invite { margin: 7px 0 0; font-size: 13px; font-weight: 700; color: var(--brand); }
+    .hero-tools { display: flex; gap: 14px; align-items: center; }
+    .credits { display: flex; margin: 0; padding: 10px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; }
+    .credit { padding: 0 21px; min-width: 128px; }
+    .credit + .credit { border-left: 1px solid var(--line); }
+    .credit dt { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+    .credit dt .icon { width: 13px; height: 13px; }
+    .credit dd { margin: 2px 0 0; color: var(--ink); font-size: 23px; line-height: 1.25; font-weight: 600; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+    .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--surface); }
+    .icon-button:hover { color: var(--ink); background: #edf1f6; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 2px 3px rgb(24 43 68 / 2%); overflow: hidden; }
+    .input-content { padding: 21px 24px 20px; }
+    .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    h2 { margin: 0; font-size: 14px; font-weight: 600; }
+    .input-hint { color: var(--muted); font-size: 12px; }
+    #links { display: block; width: 100%; min-height: 116px; max-height: 320px; resize: vertical; padding: 12px 14px; border: 1px solid #e1e6ee; border-radius: 8px; background: var(--soft); color: #43516a; font: 12.5px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; outline: none; transition: border-color .15s, box-shadow .15s; }
+    #links::placeholder { color: #748197; opacity: 1; }
+    #links:focus { background: white; border-color: #7395c2; box-shadow: 0 0 0 3px #eaf0f9; }
+    .query-controls { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; }
+    .query-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+    .button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; height: 37px; padding: 0 14px; border: 1px solid #dde3eb; border-radius: 7px; background: white; color: #47566b; font-size: 12.5px; font-weight: 500; white-space: nowrap; transition: background .15s, border-color .15s; }
+    .button:hover:not(:disabled) { background: var(--soft); border-color: #bac6d6; }
+    .button.primary { padding: 0 17px; background: var(--brand); color: white; border-color: var(--brand); }
+    .button.primary:hover:not(:disabled) { background: var(--brand-hover); border-color: var(--brand-hover); }
+    .keyboard-hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    kbd { font: inherit; padding: 2px 5px; margin: 0 2px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+    .query-progress { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    progress { width: 96px; height: 4px; border: 0; border-radius: 9px; overflow: hidden; appearance: none; }
+    progress::-webkit-progress-bar { background: #e8edf3; }
+    progress::-webkit-progress-value { background: var(--brand); }
+    progress::-moz-progress-bar { background: var(--brand); }
+    .account-details { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; column-gap: 24px; row-gap: 8px; padding: 12px 24px; border-top: 1px solid #edf0f5; background: #fcfdfe; color: var(--muted); font-size: 12px; }
+    .account-details[hidden] { display: none !important; }
+    .detail-group { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .detail-label { color: #607087; }
+    .detail-label small { font-size: 10px; margin-left: 4px; color: #798496; }
+    .detail-value { white-space: nowrap; }
+    .detail-value strong { color: #3b4a61; font-weight: 550; font-variant-numeric: tabular-nums; }
+    .detail-separator { width: 1px; height: 10px; background: #dce3ec; }
+    .results { margin-top: 21px; }
+    .results-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 18px 24px; }
+    .results-title { display: flex; gap: 10px; align-items: center; }
+    .result-count { font-size: 11px; color: var(--muted); border-left: 1px solid var(--line); padding-left: 10px; }
+    .result-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .result-actions .button { height: 32px; font-size: 12px; padding: 0 10px; }
+    .result-actions .icon { width: 14px; height: 14px; }
+    .button.quiet { border-color: transparent; background: transparent; }
+    .table-hint { display: none; margin: 0; padding: 0 24px 12px; color: var(--muted); font-size: 11px; }
+    .table-scroll { width: 100%; overflow-x: auto; }
+    table { width: 100%; min-width: 1030px; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 13px; }
+    col.row-index { width: 52px; }
+    col.email-column { width: 258px; }
+    col.phone-column { width: 194px; }
+    col.status-column { width: 116px; }
+    th { height: 39px; padding: 0 14px; border-block: 1px solid #edf0f5; background: #fafbfd; font-size: 11px; font-weight: 500; color: var(--muted); }
+    td { padding: 13px 14px; border-bottom: 1px solid #edf0f5; line-height: 24px; vertical-align: top; }
+    th:first-child, td:first-child { padding-left: 24px; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fafcfe; }
+    .row-number { color: #7b8798; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .profile-url { color: var(--link); font-size: 12.5px; overflow-wrap: anywhere; }
+    .contact-value { display: flex; align-items: center; gap: 5px; min-height: 24px; color: #38475d; }
+    .contact-value + .contact-value { margin-top: 3px; }
+    .contact-value > span { overflow-wrap: anywhere; min-width: 0; }
+    .phone-value > span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .copy-button { width: 24px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border: 0; border-radius: 5px; background: transparent; color: #8c99aa; opacity: .5; }
+    .copy-button .icon { width: 13px; height: 13px; }
+    tr:hover .copy-button, .copy-button:focus-visible { opacity: 1; }
+    .copy-button:hover { background: #eaf0f7; color: var(--brand); }
+    .copy-button.copied { color: var(--green); opacity: 1; }
+    .no-value { color: #8894a6; }
+    .result-status { display: inline-flex; align-items: center; gap: 6px; padding: 0; margin: 0; font-size: 12px; font-weight: 400; line-height: 24px; white-space: nowrap; }
+    .result-status::before { content: ""; width: 5px; height: 5px; flex-shrink: 0; border-radius: 50%; background: currentColor; }
+    .result-status--found { color: var(--green); }
+    .result-status--none { color: var(--amber); }
+    .result-status--failed { color: var(--red); }
+    td.table-empty { text-align: center; padding: 46px 24px; color: var(--muted); }
+    .table-empty .icon { display: block; width: 28px; height: 28px; margin: 0 auto 10px; color: #95a5bb; }
+    .table-empty strong { display: block; font-weight: 500; color: #51627a; }
+    .table-empty p { margin: 3px 0 0; font-size: 12px; }
+    .results-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 24px; border-top: 1px solid #edf0f5; color: var(--muted); font-size: 11px; }
+    .run-status { display: flex; align-items: center; gap: 7px; }
+    .run-status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #788aa1; }
+    #toast { position: fixed; z-index: 20; bottom: 28px; left: 50%; transform: translate(-50%, 8px); max-width: calc(100% - 32px); width: max-content; padding: 11px 18px; background: #263b56; color: white; border-radius: 9px; font-size: 12px; box-shadow: 0 5px 20px #1c314b1a; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; }
+    #toast.visible { opacity: 1; transform: translate(-50%, 0); }
+    dialog { width: min(390px, calc(100% - 36px)); padding: 24px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); box-shadow: 0 18px 70px #17273c26; }
+    dialog::backdrop { background: #182d4b45; }
+    dialog h2 { font-size: 17px; }
+    dialog p { color: var(--muted); font-size: 13px; }
+    dialog label { display: block; font-size: 12px; margin-bottom: 7px; }
+    dialog input { display: block; width: 100%; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); font-size: 12px; padding: 10px; }
+    .dialog-status { margin-top: 8px; font-size: 12px; color: var(--muted); }
+    .dialog-actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px; }
+    @media (max-width: 1050px) {
+      .hero { flex-wrap: wrap; }
+      .hero-tools { width: 100%; margin-top: 6px; padding-left: 55px; }
+      .credit { min-width: 160px; }
+      .hero-tools .icon-button { margin-left: auto; }
+      .keyboard-hint { display: none; }
+      .table-hint { display: block; }
+    }
+    @media (max-width: 640px) {
+      .wrap { width: calc(100% - 28px); padding-top: 18px; }
+      .hero { gap: 11px; margin-bottom: 20px; }
+      .logo { width: 34px; height: 36px; border-radius: 9px; }
+      .logo svg { width: 18px; height: 21px; }
+      h1 { font-size: 18px; letter-spacing: -.04em; }
+      .subtitle { font-size: 11px; line-height: 1.7; }
+      .hero-tools { padding-left: 0; gap: 10px; }
+      .credits { flex: 1; }
+      .credit { min-width: 0; flex: 1; padding: 0 14px; }
+      .credit dd { font-size: 21px; }
+      .input-content { padding: 17px 15px; }
+      .section-heading { align-items: flex-start; }
+      .input-hint { font-size: 10px; }
+      #links { min-height: 122px; font-size: 16px; line-height: 1.6; padding: 10px; }
+      .query-controls { flex-wrap: wrap; gap: 12px; }
+      .query-buttons { width: 100%; gap: 6px; }
+      .query-buttons .button { flex: 1; height: 42px; padding: 0 8px; font-size: 11px; gap: 5px; }
+      .query-buttons .icon { width: 14px; height: 14px; }
+      .query-progress { width: 100%; justify-content: flex-end; }
+      .account-details { padding: 12px 15px; gap: 9px; }
+      .detail-group { width: 100%; column-gap: 9px; font-size: 11px; }
+      .detail-label { min-width: 61px; }
+      .detail-label small { display: none; }
+      .results-header { padding: 16px 15px; }
+      .table-hint { padding-inline: 15px; }
+      .result-actions { gap: 4px; width: 100%; }
+      .result-actions .button { height: 36px; padding: 0 9px; }
+      .results-footer { padding: 12px 15px; gap: 8px; font-size: 10px; }
+    }
+    @media (hover: none) { .copy-button { opacity: 1; width: 30px; height: 28px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="hero">
-    <div class="logo">📇</div>
-    <div class="htxt">
-      <h1>Blue 的关键决策人查询系统</h1>
-      <div class="sub">粘贴 LinkedIn 链接，自动查询邮箱 · 结果实时显示 · 支持导出 CSV</div>
-    </div>
-    <div class="credit-pill">
-      <span class="n" id="creditNum">--</span>
-      <span class="l" id="creditLabel">剩余邮箱额度</span>
-    </div>
-    <div class="credit-pill">
-      <span class="n" id="phoneCreditNum">--</span>
-      <span class="l" id="phoneCreditLabel">剩余电话额度</span>
-    </div>
-    <button class="gear" id="settingsBtn" title="设置口令">⚙️</button>
-  </div>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><path d="m8 3 2 5-2.5 2a15 15 0 0 0 6.5 6.5l2-2.5 5 2v3a2 2 0 0 1-2.2 2C10.5 20 4 13.5 3 5.2A2 2 0 0 1 5 3Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-.8 2.8-2.9-.1-2.2 3.8 1.5 2.5-1.5 2.5 2.2 3.8 2.9-.1L9 21h6l.8-2.8 2.9.1 2.2-3.8-1.5-2.5 1.5-2.5-2.2-3.8-2.9.1L15 3Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12M3 15h18"/></symbol>
+  </svg>
 
-  <!-- 设置弹窗 -->
-  <div class="mask" id="settingsMask">
-    <div class="modal">
-      <h3>⚙️ 设置</h3>
-      <div class="sub2">填写你的访问口令后即可查询</div>
-      <label for="tokenInput">访问口令</label>
-      <input id="tokenInput" placeholder="输入口令，如 co_xxxxxxxx" autocomplete="off">
-      <div class="mstatus" id="tokenStatus"></div>
-      <div class="mrow">
-        <button class="mlight" id="tokenClear">清除</button>
-        <button class="msave" id="tokenSave">保存</button>
+  <div class="wrap">
+    <header class="hero">
+      <div class="logo" aria-hidden="true"><svg viewBox="0 0 22 25" fill="none"><path d="M5 3v19h6.5a5 5 0 0 0 0-10H5h6a4.5 4.5 0 0 0 0-9H5Z" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="heading"><h1>关键决策人查询系统</h1><p class="subtitle">粘贴 LinkedIn 链接，查询邮箱与电话，轻松整理联系人。</p><p class="invite">欢迎联系免费给到批量的LinkedIn链接</p></div>
+      <div class="hero-tools">
+        <dl class="credits" aria-label="剩余额度">
+          <div class="credit"><dt><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg><span id="emailCreditLabel">剩余邮箱额度</span></dt><dd id="emailCredit">--</dd></div>
+          <div class="credit"><dt><svg class="icon" aria-hidden="true"><use href="#i-phone"/></svg><span id="phoneCreditLabel">剩余电话额度</span></dt><dd id="phoneCredit">--</dd></div>
+        </dl>
+        <button class="icon-button" id="settingsButton" aria-label="设置" title="设置"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></button>
       </div>
-    </div>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="inputTitle">
+        <div class="input-content">
+          <div class="section-heading"><h2 id="inputTitle"><label for="links">LinkedIn 链接</label></h2><span class="input-hint" id="inputHint">每行一个链接，可在逗号后添加姓名</span></div>
+          <textarea id="links" aria-describedby="inputHint" spellcheck="false" placeholder="每行一个 LinkedIn 链接（可加姓名提高命中率，逗号分隔）&#10;https://www.linkedin.com/in/tahseenislam&#10;https://www.linkedin.com/in/holly-brown-7baa474a, Holly Brown&#10;也可以直接写：tahseenislam"></textarea>
+          <div class="query-controls">
+            <div class="query-buttons">
+              <button class="button primary" id="goBoth"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>查邮箱+电话</button>
+              <button class="button" id="goEmail"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg>单查邮箱</button>
+              <button class="button" id="goPhone"><svg class="icon" aria-hidden="true"><use href="#i-phone"/></svg>单查电话</button>
+            </div>
+            <span class="keyboard-hint" id="keyboardHint"><kbd>⌘</kbd><kbd>Enter</kbd> 运行查询</span>
+            <div class="query-progress" id="queryProgress" hidden><span id="progressText" aria-live="polite"></span><progress id="progressBar" max="1" value="0" aria-label="查询进度"></progress></div>
+          </div>
+        </div>
+        <div class="account-details" id="accountDetails" aria-label="额度明细与累计查询" hidden>
+          <div class="detail-group"><span class="detail-label">我的额度<small>已用 / 总量</small></span><span class="detail-value">邮箱 <strong id="quotaEmail">--</strong></span><span class="detail-separator" aria-hidden="true"></span><span class="detail-value">电话 <strong id="quotaPhone">--</strong></span></div>
+          <div class="detail-group"><span class="detail-label">累计查询</span><span class="detail-value">邮件 <strong id="totalEmail">--</strong> 条</span><span class="detail-separator" aria-hidden="true"></span><span class="detail-value">电话 <strong id="totalPhone">--</strong> 条</span></div>
+        </div>
+      </section>
+
+      <section class="panel results" aria-labelledby="resultsTitle">
+        <div class="results-header">
+          <div class="results-title"><h2 id="resultsTitle">查询结果</h2><span class="result-count" id="resultCount">0 条</span></div>
+          <div class="result-actions">
+            <button class="button" id="exportButton"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 CSV</button>
+            <button class="button quiet" id="copyAllButton"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制全部邮箱</button>
+            <button class="button quiet" id="clearButton"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>清空</button>
+          </div>
+        </div>
+        <p class="table-hint">左右滑动表格，查看邮箱、电话与状态</p>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="查询结果表格，窄屏可左右滚动">
+          <table aria-label="查询结果">
+            <colgroup><col class="row-index"><col><col class="email-column"><col class="phone-column"><col class="status-column"></colgroup>
+            <thead><tr><th scope="col">#</th><th scope="col">LinkedIn</th><th scope="col">邮箱</th><th scope="col">电话</th><th scope="col">状态</th></tr></thead>
+            <tbody id="resultBody"></tbody>
+          </table>
+        </div>
+        <footer class="results-footer"><span class="run-status" id="runStatus" role="status">就绪</span><span id="resultSummary">暂无结果</span></footer>
+      </section>
+    </main>
+
   </div>
 
-  <div class="card">
-    <textarea id="in" placeholder="每行一个 LinkedIn 链接（可加姓名提高命中率，逗号分隔）&#10;https://www.linkedin.com/in/tahseenislam&#10;https://www.linkedin.com/in/holly-brown-7baa474a, Holly Brown&#10;也可以直接写：tahseenislam"></textarea>
-    <div class="ctl">
-      <button class="go" id="goBtn">🔍 查邮箱+电话</button>
-      <button class="go2" id="goEmailBtn">📧 单查邮箱</button>
-      <button class="go2" id="goPhoneBtn">📞 单查电话</button>
-      <span class="prog" id="prog"></span>
-    </div>
-  </div>
+  <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+    <h2 id="settingsTitle">访问设置</h2>
+    <p>填写访问口令后即可查询邮箱与电话，口令保存在本机浏览器。</p>
+    <label for="tokenInput">访问口令</label>
+    <input id="tokenInput" type="password" autocomplete="off" placeholder="输入口令，如 co_xxxxxxxx">
+    <div class="dialog-status" id="tokenStatus"></div>
+    <div class="dialog-actions"><button class="button" id="tokenClear">清除</button><button class="button primary" id="tokenSave">保存</button></div>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
 
-  <div class="card" id="resultCard">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <div style="font-weight:700;font-size:15px">查询结果 <span id="resultCount" class="rownum"></span></div>
-      <div class="foot" style="margin-top:0">
-        <button class="gh" onclick="exportCSV()">⬇ 导出 CSV</button>
-        <button class="gh" onclick="copyAll()">📋 复制全部邮箱</button>
-        <button class="gh" onclick="clearResults()">🗑 清空</button>
-      </div>
-    </div>
-    <div style="overflow-x:auto">
-      <table id="tbl">
-        <thead><tr><th>#</th><th>LinkedIn</th><th>邮箱</th><th>电话</th><th>状态</th></tr></thead>
-        <tbody id="tbody"><tr><td colspan="5" class="empty">查询后结果会显示在这里</td></tr></tbody>
-      </table>
-    </div>
-    <div class="stat"><span class="dot" id="dot"></span><span id="statText">就绪</span></div>
-  </div>
-</div>
+  <script>
+    let TOKEN = localStorage.getItem('co_token') || '';
+    const statusLabels = { found: '已查', none: '无结果', failed: '额度不足' };
+    const body = document.getElementById('resultBody');
+    const queryButtons = [document.getElementById('goBoth'), document.getElementById('goEmail'), document.getElementById('goPhone')];
+    const exportButton = document.getElementById('exportButton');
+    const copyAllButton = document.getElementById('copyAllButton');
+    const clearButton = document.getElementById('clearButton');
+    let rows = [];
+    let running = false;
+    let toastTimer;
 
-<script>
-let TOKEN = localStorage.getItem('co_token') || '';
-function headers() { return TOKEN ? { 'Content-Type': 'application/json', 'x-co-token': TOKEN } : { 'Content-Type': 'application/json' }; }
-
-// 设置弹窗
-const mask = document.getElementById('settingsMask');
-const tokenInput = document.getElementById('tokenInput');
-const tokenStatus = document.getElementById('tokenStatus');
-document.getElementById('settingsBtn').onclick = () => {
-  tokenInput.value = TOKEN;
-  tokenStatus.textContent = TOKEN ? '当前已设置口令' : '未设置口令';
-  mask.classList.add('on');
-  setTimeout(() => tokenInput.focus(), 100);
-};
-document.getElementById('tokenSave').onclick = () => {
-  const v = tokenInput.value.trim();
-  if (v) { TOKEN = v; localStorage.setItem('co_token', v); tokenStatus.textContent = '已保存'; refreshCredits(); }
-  else { TOKEN = ''; localStorage.removeItem('co_token'); tokenStatus.textContent = '已清除'; refreshCredits(); }
-  setTimeout(() => mask.classList.remove('on'), 600);
-};
-document.getElementById('tokenClear').onclick = () => {
-  TOKEN = ''; localStorage.removeItem('co_token'); tokenInput.value = ''; tokenStatus.textContent = '已清除';
-  refreshCredits();
-};
-mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('on'); });
-
-async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
-  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
-  if (r.status === 401) {
-    mask.classList.add('on');
-    tokenStatus.textContent = '口令无效或未设置，请填写正确口令';
-    throw new Error('未授权');
-  }
-  if (!r.ok) throw new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status));
-  return j;
-}
-async function refreshCredits() {
-  try {
-    const j = await api('/api/credits');
-    const me = j.me;
-    // 管理员: 显示全局额度; 客户: 显示自己的额度
-    if (j.is_master) {
-      document.getElementById('creditNum').textContent = j.total_email_credit;
-      document.getElementById('phoneCreditNum').textContent = j.total_phone_credit;
-      document.getElementById('creditLabel').textContent = '账号池剩余邮箱';
-      document.getElementById('phoneCreditLabel').textContent = '账号池剩余电话';
-      document.getElementById('dot').className = 'dot ' + (j.total_email_credit > 0 ? 'ok' : 'bad');
-    } else if (me) {
-      const el = me.email_limit > 0 ? (me.email_limit - me.email_used) : '∞';
-      const pl = me.phone_limit > 0 ? (me.phone_limit - me.phone_used) : '∞';
-      document.getElementById('creditNum').textContent = el;
-      document.getElementById('phoneCreditNum').textContent = pl;
-      document.getElementById('creditLabel').textContent = '我的邮箱额度';
-      document.getElementById('phoneCreditLabel').textContent = '我的电话额度';
-      document.getElementById('dot').className = 'dot ' + (el !== 0 ? 'ok' : 'bad');
+    function icon(name) { return '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+    function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
+    function notify(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('visible');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('visible'), 2400);
     }
-    // 我的额度明细行
-    if (me) {
-      let el2 = document.getElementById('myQuota');
-      if (!el2) {
-        el2 = document.createElement('div');
-        el2.id = 'myQuota';
-        el2.style.cssText = 'font-size:11.5px;color:var(--muted);margin-top:6px';
-        document.querySelector('.card .ctl').appendChild(el2);
-      }
-      el2.textContent = '我的额度: 邮箱 ' + me.email_used + '/' + (me.email_limit || '∞') + ' · 电话 ' + me.phone_used + '/' + (me.phone_limit || '∞');
-    }
-  } catch (e) { document.getElementById('creditNum').textContent = '--'; }
-}
-function parseInput() {
-  const raw = document.getElementById('in').value;
-  return raw.split(/\n/).map(s => s.trim()).filter(Boolean);
-}
-function normPhones(phones) {
-  if (!phones) return [];
-  if (typeof phones === 'string') return [{ value: phones }];
-  if (Array.isArray(phones)) return phones.map(p => typeof p === 'string' ? { value: p } : p);
-  return [];
-}
-function addRow(idx, linkedin, emails, phones, status) {
-  const tb = document.getElementById('tbody');
-  const tr = document.createElement('tr');
-  const emailsHtml = emails && emails.length ? emails.map(e => {
-    return '<div class="em">' + esc(e.value) + '</div>';
-  }).join('') : '<span style="color:#94a3b8">—</span>';
-  const phonesNorm = normPhones(phones);
-  const phonesHtml = phonesNorm.length ? phonesNorm.map(p => '<div class="ph">' + esc(p.value) + '</div>').join('') : '<span style="color:#94a3b8">—</span>';
-  tr.innerHTML = '<td class="rownum">' + idx + '</td>' +
-    '<td class="li">' + esc(linkedin) + '</td>' +
-    '<td>' + emailsHtml + '</td>' +
-    '<td>' + phonesHtml + '</td>' +
-    '<td>' + esc(status) + '</td>';
-  tb.appendChild(tr);
-}
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function setProg(t) { document.getElementById('prog').textContent = t; }
-function setStat(t, ok) {
-  document.getElementById('statText').textContent = t;
-  document.getElementById('dot').className = 'dot ' + (ok ? 'ok' : 'bad');
-}
-async function run(mode) {
-  const urls = parseInput();
-  if (!urls.length) { alert('请先粘贴 LinkedIn 链接'); return; }
-  document.getElementById('goBtn').disabled = true;
-  document.getElementById('goEmailBtn').disabled = true;
-  document.getElementById('goPhoneBtn').disabled = true;
-  document.getElementById('tbody').innerHTML = '';
-  document.getElementById('resultCount').textContent = '共 ' + urls.length + ' 条';
-  setProg('0 / ' + urls.length);
-  setStat('查询中…', true);
-  const results = [];
-  try {
-    // 单条查询, 逐个显示
-    for (let i = 0; i < urls.length; i++) {
-      setProg((i + 1) + ' / ' + urls.length);
-      try {
-        let j;
-        if (mode === 'email') {
-          j = await api('/api/reveal', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
-        } else if (mode === 'phone') {
-          j = await api('/api/phone', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
-        } else {
-          j = await api('/api/find', { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+    function headers() { return TOKEN ? { 'Content-Type': 'application/json', 'x-co-token': TOKEN } : { 'Content-Type': 'application/json' }; }
+    async function api(path, opts, quiet) {
+      const r = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+      const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
+      if (r.status === 401) {
+        if (!quiet) {
+          openSettings();
+          document.getElementById('tokenStatus').textContent = '口令无效或未设置，请填写正确口令';
         }
-        const emails = j.data.emails || [];
-        const phones = normPhones(j.data.phones);
-        const st = (emails.length || phones.length) ? '✅ 已查' : '（无结果）';
-        addRow(i + 1, urls[i], emails, phones, st);
-        results.push({ linkedin: urls[i], emails: emails.map(e => e.value).join('; '), phones: phones.map(p => p.value).join('; ') });
-        setStat('已查 ' + (i + 1) + ' 条', true);
-      } catch (e) {
-        addRow(i + 1, urls[i], [], [], '❌ ' + e.message);
-        setStat('第 ' + (i + 1) + ' 条失败: ' + e.message, false);
+        throw new Error('未授权');
       }
+      if (!r.ok) throw new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status));
+      return j;
+    }
+    function fmt(v) { return Number(v).toLocaleString('en-US'); }
+    async function refreshCredits() {
+      try {
+        const j = await api('/api/credits', {}, true);
+        const me = j.me;
+        if (j.is_master) {
+          document.getElementById('emailCredit').textContent = fmt(j.total_email_credit);
+          document.getElementById('phoneCredit').textContent = fmt(j.total_phone_credit);
+          document.getElementById('emailCreditLabel').textContent = '账号池剩余邮箱';
+          document.getElementById('phoneCreditLabel').textContent = '账号池剩余电话';
+        } else if (me) {
+          document.getElementById('emailCredit').textContent = me.email_limit > 0 ? fmt(Math.max(0, me.email_limit - me.email_used)) : '∞';
+          document.getElementById('phoneCredit').textContent = me.phone_limit > 0 ? fmt(Math.max(0, me.phone_limit - me.phone_used)) : '∞';
+          document.getElementById('emailCreditLabel').textContent = '我的邮箱额度';
+          document.getElementById('phoneCreditLabel').textContent = '我的电话额度';
+        }
+        const details = document.getElementById('accountDetails');
+        if (me) {
+          details.hidden = false;
+          document.getElementById('quotaEmail').textContent = me.email_used + ' / ' + (me.email_limit > 0 ? me.email_limit : '∞');
+          document.getElementById('quotaPhone').textContent = me.phone_used + ' / ' + (me.phone_limit > 0 ? me.phone_limit : '∞');
+          document.getElementById('totalEmail').textContent = fmt(me.email_total || 0);
+          document.getElementById('totalPhone').textContent = fmt(me.phone_total || 0);
+        } else {
+          details.hidden = true;
+        }
+      } catch (e) {
+        document.getElementById('emailCredit').textContent = '--';
+        document.getElementById('phoneCredit').textContent = '--';
+      }
+    }
+    function parseInput() {
+      return document.getElementById('links').value.split(/\n/).map(s => s.trim()).filter(Boolean);
+    }
+    function normEmails(list) {
+      if (!list) return [];
+      return list.map(e => typeof e === 'string' ? e : (e && e.value) || '').filter(Boolean);
+    }
+    function normPhones(list) {
+      if (!list) return [];
+      return list.map(p => typeof p === 'string' ? p : (p && p.value) || '').filter(Boolean);
+    }
+    function statusLabel(row) {
+      if (row.status !== 'failed') return statusLabels[row.status];
+      if (row.credit) return '额度不足';
+      return row.error || '失败';
+    }
+    function contacts(values, kind) {
+      if (!values.length) return '<span class="no-value">—</span>';
+      const label = kind === 'email' ? '邮箱' : '电话';
+      return values.map(value => '<div class="contact-value ' + kind + '-value"><span>' + escapeHtml(value) + '</span><button class="copy-button" data-copy="' + escapeHtml(value) + '" aria-label="复制' + label + ' ' + escapeHtml(value) + '" title="复制' + label + '">' + icon('copy') + '</button></div>').join('');
+    }
+    function render() {
+      body.innerHTML = rows.length ? rows.map((row, index) => '<tr><td class="row-number">' + (index + 1) + '</td><td class="profile-url">' + escapeHtml(row.profile) + '</td><td>' + contacts(row.emails, 'email') + '</td><td>' + contacts(row.phones, 'phone') + '</td><td><span class="result-status result-status--' + row.status + '" title="' + escapeHtml(row.error || statusLabel(row)) + '">' + escapeHtml(statusLabel(row)) + '</span></td></tr>').join('') : '<tr><td colspan="5" class="table-empty">' + icon('table') + '<strong>' + (running ? '正在查询' : '还没有查询结果') + '</strong><p>' + (running ? '结果即将显示' : '粘贴 LinkedIn 链接，点击「查邮箱+电话」开始查询') + '</p></td></tr>';
+      document.getElementById('resultCount').textContent = rows.length + ' 条';
+      document.getElementById('resultSummary').textContent = rows.length ? '已查 ' + rows.filter(row => row.status === 'found').length + ' · 无结果 ' + rows.filter(row => row.status === 'none').length + ' · 失败 ' + rows.filter(row => row.status === 'failed').length : '暂无结果';
+      exportButton.disabled = running || !rows.length;
+      copyAllButton.disabled = running || !rows.some(row => row.emails.length);
+      clearButton.disabled = running || !rows.length;
+    }
+    async function copy(value, button) {
+      try {
+        await navigator.clipboard.writeText(value);
+        notify('已复制到剪贴板');
+        if (button) {
+          button.classList.add('copied');
+          button.innerHTML = icon('check');
+          setTimeout(() => { button.classList.remove('copied'); button.innerHTML = icon('copy'); }, 1600);
+        }
+      } catch {
+        notify('浏览器未允许复制，可选中文字手动复制');
+      }
+    }
+    function setButtonsDisabled(disabled) { queryButtons.forEach(button => { button.disabled = disabled; }); }
+    async function run(mode) {
+      if (running) return;
+      const urls = parseInput();
+      if (!urls.length) { notify('请先粘贴 LinkedIn 链接'); return; }
+      running = true;
+      rows = [];
+      setButtonsDisabled(true);
+      const progress = document.getElementById('queryProgress');
+      const progressBar = document.getElementById('progressBar');
+      const progressText = document.getElementById('progressText');
+      progress.hidden = false;
+      document.getElementById('keyboardHint').hidden = true;
+      progressBar.max = urls.length;
+      progressBar.value = 0;
+      progressText.textContent = '0 / ' + urls.length;
+      document.getElementById('runStatus').textContent = '查询中';
+      render();
+      try {
+        for (let i = 0; i < urls.length; i++) {
+          progressBar.value = i + 1;
+          progressText.textContent = (i + 1) + ' / ' + urls.length;
+          try {
+            const path = mode === 'email' ? '/api/reveal' : mode === 'phone' ? '/api/phone' : '/api/find';
+            const j = await api(path, { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+            const d = j.data || {};
+            const emails = normEmails(d.emails);
+            const phones = normPhones(d.phones && d.phones.length ? d.phones : (d.phone ? [d.phone] : []));
+            rows.push({ profile: urls[i], emails, phones, status: emails.length || phones.length ? 'found' : 'none' });
+          } catch (e) {
+            const credit = /额度|credit|limit|上限/i.test(e.message);
+            rows.push({ profile: urls[i], emails: [], phones: [], status: 'failed', error: e.message, credit });
+          }
+          render();
+          refreshCredits();
+        }
+      } finally {
+        running = false;
+        setButtonsDisabled(false);
+        progress.hidden = true;
+        document.getElementById('keyboardHint').hidden = false;
+        document.getElementById('runStatus').textContent = '查询完成';
+        render();
+        refreshCredits();
+      }
+    }
+    body.addEventListener('click', event => {
+      const button = event.target.closest('[data-copy]');
+      if (button) copy(button.dataset.copy, button);
+    });
+    copyAllButton.addEventListener('click', () => {
+      const emails = [...new Set(rows.flatMap(row => row.emails))];
+      if (!emails.length) { notify('没有邮箱可复制'); return; }
+      copy(emails.join('\n'));
+    });
+    exportButton.addEventListener('click', () => {
+      const values = [['LinkedIn', 'Email', 'Phone'], ...rows.map(row => [row.profile, row.emails.join('; '), row.phones.join('; ')])];
+      const csv = '\ufeff' + values.map(row => row.map(value => '"' + String(value).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = '关键决策人_结果_' + new Date().toLocaleString('zh-CN', { hour12: false }).replace(/[\/: ]/g, '-') + '.csv';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify('已导出 ' + rows.length + ' 条结果');
+    });
+    clearButton.addEventListener('click', () => {
+      rows = [];
+      render();
+      document.getElementById('runStatus').textContent = '就绪';
+    });
+    const dialog = document.getElementById('settingsDialog');
+    const tokenInput = document.getElementById('tokenInput');
+    function openSettings() {
+      tokenInput.value = TOKEN;
+      document.getElementById('tokenStatus').textContent = TOKEN ? '当前已设置口令' : '未设置口令';
+      if (!dialog.open) dialog.showModal();
+      setTimeout(() => tokenInput.focus(), 50);
+    }
+    document.getElementById('settingsButton').addEventListener('click', openSettings);
+    document.getElementById('tokenSave').addEventListener('click', () => {
+      const v = tokenInput.value.trim();
+      TOKEN = v;
+      if (v) { localStorage.setItem('co_token', v); document.getElementById('tokenStatus').textContent = '已保存'; }
+      else { localStorage.removeItem('co_token'); document.getElementById('tokenStatus').textContent = '已清除'; }
       refreshCredits();
-    }
-  } finally {
-    document.getElementById('goBtn').disabled = false;
-    document.getElementById('goEmailBtn').disabled = false;
-    document.getElementById('goPhoneBtn').disabled = false;
-    setProg('');
+      setTimeout(() => dialog.close(), 500);
+    });
+    document.getElementById('tokenClear').addEventListener('click', () => {
+      TOKEN = '';
+      localStorage.removeItem('co_token');
+      tokenInput.value = '';
+      document.getElementById('tokenStatus').textContent = '已清除';
+      refreshCredits();
+    });
+    dialog.addEventListener('click', event => { if (event.target === dialog && (event.offsetX < 0 || event.offsetX > dialog.clientWidth || event.offsetY < 0 || event.offsetY > dialog.clientHeight)) dialog.close(); });
+    document.getElementById('goBoth').addEventListener('click', () => run('both'));
+    document.getElementById('goEmail').addEventListener('click', () => run('email'));
+    document.getElementById('goPhone').addEventListener('click', () => run('phone'));
+    document.getElementById('links').addEventListener('keydown', event => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); run('both'); }
+    });
+    render();
     refreshCredits();
-  }
-}
-function exportCSV() {
-  const rows = [['LinkedIn', 'Email', 'Phone']];
-  document.querySelectorAll('#tbody tr').forEach(tr => {
-    const tds = tr.querySelectorAll('td');
-    if (tds.length >= 4) {
-      rows.push([tds[1].textContent, tds[2].textContent, tds[3].textContent]);
-    }
-  });
-  const csv = '\ufeff' + rows.map(r => r.map(v => '"' + v.replace(/"/g, '""') + '"').join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = 'contactout_结果_' + new Date().toISOString().slice(0, 10) + '.csv';
-  a.click();
-}
-function copyAll() {
-  const emails = [];
-  document.querySelectorAll('#tbody tr').forEach(tr => {
-    const tds = tr.querySelectorAll('td');
-    if (tds.length >= 3) tds[2].textContent.split('\n').forEach(s => { s = s.trim(); if (s) emails.push(s); });
-  });
-  const uniq = [...new Set(emails)];
-  if (!uniq.length) { alert('没有邮箱可复制'); return; }
-  navigator.clipboard.writeText(uniq.join('\n')).then(() => alert('已复制 ' + uniq.length + ' 个邮箱'));
-}
-function clearResults() { document.getElementById('tbody').innerHTML = '<tr><td colspan="5" class="empty">查询后结果会显示在这里</td></tr>'; document.getElementById('resultCount').textContent = ''; }
-document.getElementById('goBtn').onclick = () => run('both');
-document.getElementById('goEmailBtn').onclick = () => run('email');
-document.getElementById('goPhoneBtn').onclick = () => run('phone');
-document.getElementById('in').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run('both'); });
-refreshCredits();
-</script>
+  </script>
 </body>
 </html>
