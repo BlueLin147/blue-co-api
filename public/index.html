@@ -302,8 +302,8 @@
         } else if (me) {
           document.getElementById('emailCredit').textContent = me.email_limit > 0 ? fmt(Math.max(0, me.email_limit - me.email_used)) : '∞';
           document.getElementById('phoneCredit').textContent = me.phone_limit > 0 ? fmt(Math.max(0, me.phone_limit - me.phone_used)) : '∞';
-          document.getElementById('emailCreditLabel').textContent = '我的邮箱额度';
-          document.getElementById('phoneCreditLabel').textContent = '我的电话额度';
+          document.getElementById('emailCreditLabel').textContent = '我的每日邮箱额度';
+          document.getElementById('phoneCreditLabel').textContent = '我的每日电话额度';
         }
         const details = document.getElementById('accountDetails');
         if (me) {
