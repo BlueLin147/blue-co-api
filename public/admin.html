@@ -178,6 +178,16 @@
         <tbody id="logBody"><tr><td colspan="7" class="st" style="text-align:center;padding:20px">选择口令/刷新加载日志</td></tr></tbody>
       </table>
     </div>
+    <div style="margin-top:14px;border-top:1px solid #eef0f4;padding-top:12px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">🛰 询盘系统查询（contact.blue147.cn）<span class="st" id="oqLogHint"></span></div>
+      <div style="overflow-x:auto;max-height:300px;overflow-y:auto">
+        <table id="oqLogTbl">
+          <thead><tr><th>时间</th><th>口令</th><th>类型</th><th>IP</th><th>域名</th><th>人数/匹配</th></tr></thead>
+          <tbody id="oqLogBody"><tr><td colspan="6" class="st" style="text-align:center;padding:14px">加载中…</td></tr></tbody>
+        </table>
+      </div>
+      <button class="gh" id="oqLogRefresh" style="margin-top:8px">刷新询盘日志</button>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -577,11 +587,32 @@ async function oqDel(tk) {
 }
 document.getElementById('oqSetBtn').onclick = oqSet;
 document.getElementById('oqRefreshBtn').onclick = loadOq;
+
+// —— 询盘系统查询日志 (contact.blue147.cn) ——
+async function loadOqLog() {
+  const hint = document.getElementById('oqLogHint'), tb = document.getElementById('oqLogBody');
+  try {
+    const r = await fetch('https://contact.blue147.cn/api/v1/query-log?days=7',
+      { headers: MASTER ? { 'x-co-token': MASTER } : {} });
+    if (r.status === 403) { tb.innerHTML = '<tr><td colspan="6" class="st" style="text-align:center;padding:14px">需要主口令权限</td></tr>'; return; }
+    const j = await r.json();
+    hint.textContent = '共 ' + (j.log || []).length + ' 条';
+    tb.innerHTML = (j.log || []).map(e => {
+      const d = new Date(e.ts * 1000);
+      const p = d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const tok = esc(e.token || '-');
+      const doms = esc((Array.isArray(e.domains) ? e.domains : []).join(', ')).slice(0, 60);
+      const det = e.detail ? (e.detail.people || 0) + ' / ' + (e.detail.matched || 0) : '-';
+      return '<tr><td>' + p + '</td><td><code>' + tok + '</code></td><td>' + esc(e.kind || '-') + '</td><td>' + esc(e.ip || '-') + '</td><td>' + doms + '</td><td>' + det + '</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="st" style="text-align:center;padding:14px">暂无询盘查询记录</td></tr>';
+  } catch (e) { tb.innerHTML = '<tr><td colspan="6" class="st" style="text-align:center;padding:14px">加载失败: ' + esc(e.message) + '</td></tr>'; }
+}
+document.getElementById('oqLogRefresh').onclick = loadOqLog;
 document.getElementById('refreshLog').onclick = loadUsage;
 document.getElementById('logToken').onchange = loadUsage;
 document.getElementById('logDays').onchange = loadUsage;
 
-loadStats(); loadTokens(); loadUsage(); loadWarmup(); loadSubAdmins(); loadOq();
+loadStats(); loadTokens(); loadUsage(); loadWarmup(); loadSubAdmins(); loadOq(); loadOqLog();
 setInterval(loadStats, 30000);
 setInterval(loadWarmup, 60000);
 </script>
