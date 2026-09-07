@@ -28,6 +28,8 @@ const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json
 const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, 'usage.json');
 let CUSTOM_TOKENS = {};   // key -> { name, email_limit, phone_limit, email_used, phone_used, day, created, active }
 let USAGE_LOG = [];       // [{ ts, token, name, profile, kind, email, phone, ok }]
+let SUBADMINS = {};       // sid -> { name, password, email_limit, phone_limit, email_used, phone_used, day, created, active, tokens:{ tk->{...} } }
+const SUBADMIN_FILE = process.env.SUBADMIN_FILE || path.join(__dirname, 'subadmins.json');
 
 function loadJSONFile(file, fallback) {
   try {
@@ -41,8 +43,9 @@ function saveJSONFile(file, data) {
   if (GIST_TOKEN && GIST_ID) gistPush(true);
 }
 CUSTOM_TOKENS = loadJSONFile(TOKENS_FILE, {});
+SUBADMINS = loadJSONFile(SUBADMIN_FILE, {});
 USAGE_LOG = loadJSONFile(USAGE_FILE, []);
-if (USAGE_LOG.length > 20000) USAGE_LOG = USAGE_LOG.slice(-20000); // 只留最近 2 万条
+if (USAGE_LOG.length > 50000) USAGE_LOG = USAGE_LOG.slice(-50000); // 只留最近 2 万条
 
 // —— Gist 持久化 (Render 免费档无持久磁盘, 用 GitHub Gist 存 tokens+usage) ——
 // 环境变量: GIST_TOKEN (GitHub PAT), GIST_ID (gist id), 文件: tokens.json + usage.json
@@ -55,7 +58,7 @@ async function gistPush(force) {
   _gistDebounce = null;
   const doPush = async () => {
     try {
-      const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-20000)) } } };
+      const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-50000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
       await fetch(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH', headers: { 'Authorization': 'token ' + GIST_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -73,29 +76,61 @@ async function gistPull() {
       try { CUSTOM_TOKENS = JSON.parse(j.files['tokens.json'].content); } catch (e) {}
     }
     if (j.files && j.files['usage.json'] && USAGE_LOG.length === 0) {
-      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-20000); } catch (e) {}
+      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-50000); } catch (e) {}
+    }
+    if (j.files && j.files['subadmins.json'] && Object.keys(SUBADMINS).length === 0) {
+      try { SUBADMINS = JSON.parse(j.files['subadmins.json'].content); } catch (e) {}
     }
   } catch (e) {}
 }
 
 function dayKey() { return new Date().toISOString().slice(0, 10); }
 
-// 每日用量重置（按天滚动）
+// 每日用量重置（按天滚动）; 永久累计字段 email_total_used/phone_total_used 不重置
 function tokenUsage(tk) {
   const d = dayKey();
   const t = CUSTOM_TOKENS[tk];
   if (!t) return null;
-  if (t.day !== d) { t.day = d; t.email_used = 0; t.phone_used = 0; saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
+  if (t.day !== d) {
+    // 把当日用量累加到永久累计
+    t.email_total_used = (t.email_total_used || 0) + (t.email_used || 0);
+    t.phone_total_used = (t.phone_total_used || 0) + (t.phone_used || 0);
+    t.day = d; t.email_used = 0; t.phone_used = 0; saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
+  }
   return t;
 }
 function tokenOK(req, u) {
   const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
   // 开放模式: 无任何 token 配置时允许访问 (本地用)
-  if (!TOKENS.length && !Object.keys(CUSTOM_TOKENS).length) return true;
+  if (!TOKENS.length && !Object.keys(CUSTOM_TOKENS).length && !Object.keys(SUBADMINS).length) return true;
   if (!tk) return false;
   if (TOKENS.indexOf(tk) !== -1) return true;
   if (CUSTOM_TOKENS[tk] && CUSTOM_TOKENS[tk].active !== false) return true;
+  // 子管理员创建的口令
+  for (const sid of Object.keys(SUBADMINS)) {
+    const s = SUBADMINS[sid];
+    if (s.active === false) continue;
+    if (s.tokens && s.tokens[tk] && s.tokens[tk].active !== false) return true;
+  }
   return false;
+}
+// 找到 token 所属(主口令 or 子管理员)
+function tokenOwner(tk) {
+  if (CUSTOM_TOKENS[tk]) return { type: 'token', t: CUSTOM_TOKENS[tk] };
+  for (const sid of Object.keys(SUBADMINS)) {
+    const s = SUBADMINS[sid];
+    if (s.tokens && s.tokens[tk]) return { type: 'sub', sid, s, t: s.tokens[tk] };
+  }
+  return null;
+}
+// 子管理员登录校验 (subadmin token 通过 x-co-admin header 或 query admin=)
+function subAdminOK(req, u) {
+  const sid = req.headers['x-co-admin'] || u.searchParams.get('admin') || '';
+  const pw = req.headers['x-co-admin-pw'] || u.searchParams.get('admin_pw') || '';
+  if (!sid || !pw) return null;
+  const s = SUBADMINS[sid];
+  if (!s || s.active === false || s.password !== pw) return null;
+  return s;
 }
 function masterOK(req, u) {
   const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
@@ -106,13 +141,54 @@ function masterOK(req, u) {
 // 记录一次用量 (查询成功或尝试都记; consumedEmail/consumedPhone 表示是否扣额度)
 function logUsage(req, tk, info) {
   try {
-    USAGE_LOG.push(Object.assign({ ts: Date.now(), token: tk, name: (CUSTOM_TOKENS[tk] || {}).name || 'env', ip: (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress }, info));
-    if (USAGE_LOG.length > 20000) USAGE_LOG = USAGE_LOG.slice(-20000);
+    const owner = tokenOwner(tk);
+    let uname = 'env', usub = '';
+    if (owner) {
+      if (owner.type === 'token') uname = owner.t.name || 'token';
+      else { uname = (owner.t.name || 'token'); usub = (owner.s.name || owner.sid); }
+    }
+    USAGE_LOG.push(Object.assign({ ts: Date.now(), token: tk, name: uname, sub: usub, ip: (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress }, info));
+    if (USAGE_LOG.length > 50000) USAGE_LOG = USAGE_LOG.slice(-50000);
     saveJSONFile(USAGE_FILE, USAGE_LOG);
   } catch (e) {}
 }
-// 检查 token 当日邮箱/电话额度
+// 统计某口令实际查询成功数（按扣费口径: 查到才算）
+function tokenTotals(tk) {
+  const logs = USAGE_LOG.filter(x => x.token === tk);
+  let email = 0, phone = 0;
+  for (const x of logs) {
+    if (x.kind === 'email') { if (x.ok) email++; }
+    else if (x.kind === 'phone') { if (x.ok) phone++; }
+    else if (x.kind === 'both') {
+      if (x.em_ok !== undefined) { if (x.em_ok) email++; if (x.ph_ok) phone++; }
+      else { // 旧日志兼容: 按 email/phone 字段是否有值
+        if (x.email && x.email.trim()) email++;
+        if (x.phone && x.phone.trim()) phone++;
+      }
+    }
+    // batch 等不统计
+  }
+  return { email_total: email, phone_total: phone };
+}
+
+// 检查 token 当日邮箱/电话额度 (子管理员 token 受子管理员池+自身双重限制)
 function tokenQuotaOK(tk, kind) {
+  const owner = tokenOwner(tk);
+  // 子管理员池限制
+  if (owner && owner.type === 'sub') {
+    const s = owner.s;
+    const d = dayKey();
+    if (s.day !== d) { s.day = d; s.email_used = 0; s.phone_used = 0; }
+    const sUsed = kind === 'email' ? (s.email_used || 0) : (s.phone_used || 0);
+    const sLimit = kind === 'email' ? (s.email_limit || 0) : (s.phone_limit || 0);
+    if (sLimit > 0 && sUsed >= sLimit) return { ok: false, limit: sLimit, used: sUsed, scope: 'subadmin' };
+    // 自身 token 限制
+    const t = owner.t;
+    const used = kind === 'email' ? (t.email_used || 0) : (t.phone_used || 0);
+    const limit = kind === 'email' ? (t.email_limit || 0) : (t.phone_limit || 0);
+    if (limit > 0 && used >= limit) return { ok: false, limit, used };
+    return { ok: true };
+  }
   const t = tokenUsage(tk);
   if (!t) return { ok: true };
   const used = kind === 'email' ? (t.email_used || 0) : (t.phone_used || 0);
@@ -122,10 +198,21 @@ function tokenQuotaOK(tk, kind) {
   return { ok: true };
 }
 function consumeQuota(tk, kind, n = 1) {
+  const owner = tokenOwner(tk);
+  if (owner && owner.type === 'sub') {
+    const s = owner.s;
+    if (kind === 'email') { s.email_used = (s.email_used || 0) + n; s.email_total_used = (s.email_total_used || 0) + n; }
+    else { s.phone_used = (s.phone_used || 0) + n; s.phone_total_used = (s.phone_total_used || 0) + n; }
+    const t = owner.t;
+    if (kind === 'email') { t.email_used = (t.email_used || 0) + n; t.email_total_used = (t.email_total_used || 0) + n; }
+    else { t.phone_used = (t.phone_used || 0) + n; t.phone_total_used = (t.phone_total_used || 0) + n; }
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS);
+    return;
+  }
   const t = tokenUsage(tk);
   if (!t) return;
-  if (kind === 'email') t.email_used = (t.email_used || 0) + n;
-  else t.phone_used = (t.phone_used || 0) + n;
+  if (kind === 'email') { t.email_used = (t.email_used || 0) + n; t.email_total_used = (t.email_total_used || 0) + n; }
+  else { t.phone_used = (t.phone_used || 0) + n; t.phone_total_used = (t.phone_total_used || 0) + n; }
   saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS);
 }
 function genTokenKey() {
@@ -134,11 +221,42 @@ function genTokenKey() {
 
 // —— 账号池: 内存中维护, 每次查询更新额度 ——
 let SESSIONS = [];
-function loadSessions() {
+async function gistLoadSessions() {
+  const gid = process.env.SESSIONS_GIST || '';
+  if (!gid) return false;
+  const fetchMeta = async (auth) => {
+    const metaR = await fetch(`https://api.github.com/gists/${gid}`, auth ? { headers: { 'Authorization': 'token ' + GIST_TOKEN } } : {});
+    if (!metaR.ok) return null;
+    return metaR.json();
+  };
+  try {
+    // 用 raw_url 下载, 避免 GitHub API 对超大 content 的截断 (truncated)
+    let meta = await fetchMeta(true);
+    if (!meta || !(meta.files && meta.files['sessions.json'])) meta = await fetchMeta(false); // token 失效回退匿名
+    const file = meta && meta.files && meta.files['sessions.json'];
+    if (file) {
+      const rawUrl = file.raw_url;
+      if (rawUrl) {
+        const rawR = await fetch(rawUrl);
+        if (rawR.ok) {
+          const arr = JSON.parse(await rawR.text());
+          if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+        }
+      }
+      const arr = JSON.parse(file.content);
+      if (Array.isArray(arr) && arr.length) { SESSIONS = arr; return true; }
+    }
+  } catch (e) { console.error('Gist sessions 加载失败:', e.message); }
+  return false;
+}
+async function loadSessions() {
   try {
     let raw = null;
     if (process.env.SESSIONS_JSON) {
       raw = process.env.SESSIONS_JSON;
+    } else if (process.env.SESSIONS_GIST) {
+      if (await gistLoadSessions()) return;
+      raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
     } else {
       raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
     }
@@ -151,6 +269,7 @@ function loadSessions() {
 function saveSessions() {
   // 环境变量模式不写回 (cookie 由环境变量管理); 本地文件模式写回
   if (process.env.SESSIONS_JSON) return;
+  if (process.env.SESSIONS_GIST) return;
   try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(SESSIONS, null, 2)); } catch (e) {}
 }
 loadSessions();
@@ -275,6 +394,7 @@ async function revealWithAccount(session, item) {
       'Cookie': session.cookie,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8000),
   });
   const text = await res.text();
   let data = null;
@@ -282,9 +402,10 @@ async function revealWithAccount(session, item) {
   return { status: res.status, data, text };
 }
 
-// 单条查询: 失败/受限换账号重试
+// 单条查询: 失败/受限换账号重试 (受限 profile 全场锁死, 试 MAX_ACCT_ATTEMPTS 个账号即判定, 避免全池遍历秒变分钟级)
+const MAX_ACCT_ATTEMPTS = 12;
 async function lookupOne(item) {
-  const attempts = SESSIONS.length || 1;
+  const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
     const session = await pickAccount();
@@ -353,7 +474,7 @@ async function lookupOne(item) {
 
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
 async function lookupPhone(item) {
-  const attempts = SESSIONS.length || 1;
+  const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
     // 选有电话额度的账号
@@ -386,6 +507,7 @@ async function lookupPhone(item) {
           'x-disable-message': '0',
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
       });
       const text = await r.text();
       let data = null; try { data = JSON.parse(text); } catch (e) {}
@@ -502,6 +624,15 @@ function serveAdmin(res) {
     return json(res, 500, { error: 'admin.html missing: ' + e.message });
   }
 }
+function serveSubAdmin(res) {
+  try {
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    return res.end(fs.readFileSync(path.join(__dirname, 'public', 'contactout_subadmin.html')));
+  } catch (e) {
+    return json(res, 500, { error: 'subadmin.html missing: ' + e.message });
+  }
+}
 
 // —— 服务 ——
 const server = http.createServer(async (req, res) => {
@@ -513,6 +644,7 @@ const server = http.createServer(async (req, res) => {
   // 前端页面 (无需 token, 客户打开即用; 查询 API 才需 token)
   if (p === '/' || p === '/index.html') return serveIndex(res);
   if (p === '/admin' || p === '/admin.html') return serveAdmin(res);
+  if (p === '/sub' || p === '/sub.html' || p === '/subadmin' || p === '/subadmin.html') return serveSubAdmin(res);
 
   if (p === '/health') return json(res, 200, { ok: true, accounts: SESSIONS.length, total_email_credit: totalEmailCredit() });
 
@@ -522,7 +654,9 @@ const server = http.createServer(async (req, res) => {
     const tk = req.headers['x-co-token'] || u.searchParams.get('token') || '';
     const tu = tokenUsage(tk);
     const isMaster = masterOK(req, u);
-    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, name: tu.name || '' } : null;
+    // 该口令累计实际查询数（按查到算, 跨天累加）
+    const totals = tokenTotals(tk);
+    const my = tu ? { email_limit: tu.email_limit || 0, email_used: tu.email_used || 0, phone_limit: tu.phone_limit || 0, phone_used: tu.phone_used || 0, email_total: totals.email_total, phone_total: totals.phone_total, name: tu.name || '' } : null;
     // 客户: 只返回自己的额度; 管理员: 额外返回全局账号池
     if (!isMaster) {
       return json(res, 200, { ok: true, resets: 'daily', me: my, is_master: false });
@@ -589,9 +723,11 @@ const server = http.createServer(async (req, res) => {
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
     const [em, ph] = await Promise.all([enqueue(() => lookupOne(item)), enqueue(() => lookupPhone(item))]);
-    if (em.ok && em.emails && em.emails.length > 0) consumeQuota(tk, 'email');
-    if (ph.ok && ph.phone) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
+    const em_ok = !!(em.ok && em.emails && em.emails.length > 0);
+    const ph_ok = !!(ph.ok && ph.phone);
+    if (em_ok) consumeQuota(tk, 'email');
+    if (ph_ok) consumeQuota(tk, 'phone');
+    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), em_ok, ph_ok, email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
     const phoneList = ph.ok ? (ph.phones && ph.phones.length ? ph.phones : (ph.phone ? [ph.phone] : [])) : [];
     return json(res, 200, { code: 0, data: {
       ok: em.ok || ph.ok,
@@ -636,12 +772,16 @@ const server = http.createServer(async (req, res) => {
 
   // ============ 管理后台端点 (需 master token) ============
   // GET /admin/api/tokens  列出所有口令+用量
-  if (p === '/admin/api/tokens' && req.method !== 'POST') {
+   if (p === '/admin/api/tokens' && req.method !== 'POST') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const today = dayKey();
     const list = Object.keys(CUSTOM_TOKENS).map(k => {
       const t = CUSTOM_TOKENS[k];
-      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, created: t.created, active: t.active !== false };
+      // 累计实际查询数（优先永久累计字段, 兜底日志计算）
+      const totals = tokenTotals(k);
+      const et = t.email_total_used || totals.email_total || 0;
+      const pt = t.phone_total_used || totals.phone_total || 0;
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: et, phone_total: pt, created: t.created, active: t.active !== false };
     });
     const envTokens = TOKENS.map((k, i) => ({ key: k, name: '环境变量口令 #' + (i + 1), email_limit: 0, phone_limit: 0, email_used: 0, phone_used: 0, created: 0, active: true, isEnv: true }));
     return json(res, 200, { ok: true, tokens: list.concat(envTokens) });
@@ -707,8 +847,193 @@ const server = http.createServer(async (req, res) => {
     const data = body.data || body;
     if (!data || (!data.tokens && !data.usage)) return json(res, 400, { error: 'invalid backup data', hint: 'POST JSON {"data": <备份文件内容>}' });
     if (data.tokens) { CUSTOM_TOKENS = Object.assign({}, data.tokens); saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
-    if (data.usage) { USAGE_LOG = data.usage.slice(-20000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
+    if (data.usage) { USAGE_LOG = data.usage.slice(-50000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
     return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
+  }
+
+  // GET /admin/api/warmup  查看 cookie 预热状态 (含失效警告)
+
+  // ============ 子管理员系统 ============
+  // GET /admin/api/subadmins  主管理员: 列出所有子管理员
+  if (p === '/admin/api/subadmins' && req.method !== 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const today = dayKey();
+    const list = Object.keys(SUBADMINS).map(sid => {
+      const s = SUBADMINS[sid];
+      return { sid, name: s.name, password: s.password, email_limit: s.email_limit || 0, phone_limit: s.phone_limit || 0,
+        email_used: s.day === today ? (s.email_used || 0) : 0, phone_used: s.day === today ? (s.phone_used || 0) : 0,
+        email_total: s.email_total_used || 0, phone_total: s.phone_total_used || 0,
+        tokens: Object.keys(s.tokens || {}).length, created: s.created, active: s.active !== false };
+    });
+    return json(res, 200, { ok: true, subadmins: list });
+  }
+  // POST /admin/api/subadmins  主管理员: 创建子管理员 {"name":"代理A","password":"123456","email_limit":1170,"phone_limit":1170}
+  if (p === '/admin/api/subadmins' && req.method === 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req);
+    let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const sid = 'sub_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const password = String(body.password || '').trim() || (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8));
+    SUBADMINS[sid] = { name: String(body.name || '子管理员').slice(0, 50), password, email_limit: parseInt(body.email_limit, 10) || 1170, phone_limit: parseInt(body.phone_limit, 10) || 1170, email_used: 0, phone_used: 0, day: dayKey(), created: Date.now(), active: true, tokens: {} };
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS);
+    return json(res, 200, { ok: true, sid, password, ...SUBADMINS[sid] });
+  }
+  // POST /admin/api/subadmins/password  主管理员: 改子管理员密码
+  if (p === '/admin/api/subadmins/password') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    if (!String(body.password || '').trim()) return json(res, 400, { error: 'password required' });
+    s.password = String(body.password).trim(); saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true, password: s.password });
+  }
+  // POST /admin/api/subadmins/toggle / limit / delete / reset
+  if (p === '/admin/api/subadmins/toggle') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    s.active = body.active !== false; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  if (p === '/admin/api/subadmins/limit') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    if (body.email_limit !== undefined) s.email_limit = parseInt(body.email_limit, 10) || 0;
+    if (body.phone_limit !== undefined) s.phone_limit = parseInt(body.phone_limit, 10) || 0;
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  if (p === '/admin/api/subadmins/delete') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    delete SUBADMINS[body.sid]; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  if (p === '/admin/api/subadmins/reset') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    s.email_used = 0; s.phone_used = 0; s.day = dayKey(); saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+
+  // ============ 主管理员管理子管理员的口令 ============
+  // GET /admin/api/subadmins/tokens?sid=xxx  列出该子管理员所有口令
+  if (p === '/admin/api/subadmins/tokens' && req.method !== 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const s = SUBADMINS[u.searchParams.get('sid') || ''];
+    if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const today = dayKey();
+    const list = Object.keys(s.tokens || {}).map(k => {
+      const t = s.tokens[k];
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0,
+        email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0,
+        email_total: tokenTotals(k).email_total, phone_total: tokenTotals(k).phone_total,
+        created: t.created, active: t.active !== false };
+    });
+    return json(res, 200, { ok: true, sid: s.sid, name: s.name, tokens: list });
+  }
+  // POST /admin/api/subadmins/tokens  主管理员直接给子管理员建口令
+  if (p === '/admin/api/subadmins/tokens' && req.method === 'POST') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid];
+    if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const cnt = Object.keys(s.tokens || {}).length;
+    if (cnt >= 30) return json(res, 429, { error: 'token limit', msg: '该子管理员口令已达 30 个上限' });
+    const key = genTokenKey();
+    if (!s.tokens) s.tokens = {};
+    s.tokens[key] = { name: String(body.name || '客户').slice(0, 50), email_limit: parseInt(body.email_limit, 10) || 0, phone_limit: parseInt(body.phone_limit, 10) || 0, email_used: 0, phone_used: 0, day: dayKey(), created: Date.now(), active: true };
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS);
+    return json(res, 200, { ok: true, sid: s.sid, token: key, ...s.tokens[key] });
+  }
+  // POST /admin/api/subadmins/tokens/toggle 主管理员停用/启用子管理员的口令
+  if (p === '/admin/api/subadmins/tokens/toggle') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    t.active = body.active !== false; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  // POST /admin/api/subadmins/tokens/limit 主管理员改子管理员口令限额
+  if (p === '/admin/api/subadmins/tokens/limit') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    if (body.email_limit !== undefined) t.email_limit = parseInt(body.email_limit, 10) || 0;
+    if (body.phone_limit !== undefined) t.phone_limit = parseInt(body.phone_limit, 10) || 0;
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  // POST /admin/api/subadmins/tokens/delete 主管理员删除子管理员口令
+  if (p === '/admin/api/subadmins/tokens/delete') {
+    if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const s = SUBADMINS[body.sid]; if (!s) return json(res, 404, { error: 'subadmin not found' });
+    delete s.tokens[body.key]; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+
+  // ============ 子管理员自助端点 (子管理员登录后) ============
+  // GET /sub/api/me  登录后拿自己信息+今日额度
+  if (p === '/sub/api/me') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const d = dayKey();
+    if (s.day !== d) { s.email_total_used = (s.email_total_used || 0) + (s.email_used || 0); s.phone_total_used = (s.phone_total_used || 0) + (s.phone_used || 0); s.day = d; s.email_used = 0; s.phone_used = 0; saveJSONFile(SUBADMIN_FILE, SUBADMINS); }
+    return json(res, 200, { ok: true, sid: u.searchParams.get('admin') || req.headers['x-co-admin'], name: s.name,
+      email_limit: s.email_limit || 0, email_used: s.email_used || 0, phone_limit: s.phone_limit || 0, phone_used: s.phone_used || 0,
+      email_total: s.email_total_used || 0, phone_total: s.phone_total_used || 0,
+      resets: 'daily' });
+  }
+  // GET /sub/api/tokens  子管理员: 列出自己的口令
+  if (p === '/sub/api/tokens' && req.method !== 'POST') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const sid = u.searchParams.get('admin') || req.headers['x-co-admin'];
+    const today = dayKey();
+    const list = Object.keys(s.tokens || {}).map(k => {
+      const t = s.tokens[k];
+      return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0,
+        email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0,
+        email_total: t.email_total_used || 0, phone_total: t.phone_total_used || 0,
+        created: t.created, active: t.active !== false };
+    });
+    return json(res, 200, { ok: true, sid, tokens: list });
+  }
+  // POST /sub/api/tokens  子管理员: 创建口令 (最多30个)
+  if (p === '/sub/api/tokens' && req.method === 'POST') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const cnt = Object.keys(s.tokens || {}).length;
+    if (cnt >= 30) return json(res, 429, { error: 'token limit', msg: '最多创建 30 个口令' });
+    const key = genTokenKey();
+    if (!s.tokens) s.tokens = {};
+    s.tokens[key] = { name: String(body.name || '客户').slice(0, 50), email_limit: parseInt(body.email_limit, 10) || 0, phone_limit: parseInt(body.phone_limit, 10) || 0, email_used: 0, phone_used: 0, day: dayKey(), created: Date.now(), active: true };
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS);
+    return json(res, 200, { ok: true, token: key, ...s.tokens[key] });
+  }
+  // POST /sub/api/tokens/toggle / limit / delete
+  if (p === '/sub/api/tokens/toggle') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    t.active = body.active !== false; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  if (p === '/sub/api/tokens/limit') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    const t = s.tokens[body.key]; if (!t) return json(res, 404, { error: 'token not found' });
+    if (body.email_limit !== undefined) t.email_limit = parseInt(body.email_limit, 10) || 0;
+    if (body.phone_limit !== undefined) t.phone_limit = parseInt(body.phone_limit, 10) || 0;
+    saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  if (p === '/sub/api/tokens/delete') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const bodyTxt = await readBody(req); let body = {}; try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
+    delete s.tokens[body.key]; saveJSONFile(SUBADMIN_FILE, SUBADMINS); return json(res, 200, { ok: true });
+  }
+  // GET /sub/api/usage  子管理员: 只看自己口令的查询日志
+  if (p === '/sub/api/usage') {
+    const s = subAdminOK(req, u); if (!s) return json(res, 401, { error: 'subadmin login required' });
+    const days = parseInt(u.searchParams.get('days') || '1', 10);
+    const since = Date.now() - days * 86400000;
+    const keys = new Set(Object.keys(s.tokens || {}));
+    const rows = USAGE_LOG.filter(x => keys.has(x.token) && x.ts >= since).slice(-200).reverse().map(x => ({ ts: x.ts, token: x.token, name: x.name || x.token, kind: x.kind, profile: x.profile, email: x.email, phone: x.phone, ok: x.ok, restricted: x.restricted }));
+    return json(res, 200, { ok: true, count: rows.length, rows });
   }
 
   // GET /admin/api/warmup  查看 cookie 预热状态 (含失效警告)
