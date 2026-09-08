@@ -58,6 +58,26 @@ async function gistPush(force) {
   _gistDebounce = null;
   const doPush = async () => {
     try {
+      // 防覆盖: 本地 usage 过少而 Gist 上更多时(冷启动拉取失败等), 先合并远端再推, 避免历史日志被清空
+      if (USAGE_LOG.length < 500) {
+        try {
+          const gr = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+          if (gr.ok) {
+            const gj = await gr.json();
+            const gu = gj.files && gj.files['usage.json'];
+            if (gu && gu.size > 100000) {
+              const rr = await fetch(gu.raw_url);
+              if (rr.ok) {
+                const remote = JSON.parse(await rr.text());
+                if (Array.isArray(remote) && remote.length > USAGE_LOG.length) {
+                  const seen = new Set();
+                  USAGE_LOG = remote.concat(USAGE_LOG).filter(x => { const k = String(x.ts) + '|' + (x.token || '') + '|' + (x.profile || ''); if (seen.has(k)) return false; seen.add(k); return true; }).slice(-50000);
+                }
+              }
+            }
+          }
+        } catch (e) {}
+      }
       const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-50000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
       await fetch(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH', headers: { 'Authorization': 'token ' + GIST_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -71,17 +91,32 @@ async function gistPull() {
   if (!GIST_TOKEN || !GIST_ID) return;
   try {
     const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+    if (!r.ok) return;
     const j = await r.json();
-    if (j.files && j.files['tokens.json'] && Object.keys(CUSTOM_TOKENS).length === 0) {
-      try { CUSTOM_TOKENS = JSON.parse(j.files['tokens.json'].content); } catch (e) {}
+    const files = j.files || {};
+    // 用 raw_url 下载, 避免 GitHub API 对超大 content 的截断 (truncated)
+    const rawGet = async (name) => {
+      const f = files[name];
+      if (!f || !f.raw_url) return null;
+      try {
+        const rr = await fetch(f.raw_url);
+        if (!rr.ok) return null;
+        return JSON.parse(await rr.text());
+      } catch (e) { return null; }
+    };
+    if (Object.keys(CUSTOM_TOKENS).length === 0) {
+      const d = await rawGet('tokens.json');
+      if (d && typeof d === 'object' && !Array.isArray(d)) CUSTOM_TOKENS = d;
     }
-    if (j.files && j.files['usage.json'] && USAGE_LOG.length === 0) {
-      try { USAGE_LOG = JSON.parse(j.files['usage.json'].content).slice(-50000); } catch (e) {}
+    if (USAGE_LOG.length === 0) {
+      const d = await rawGet('usage.json');
+      if (Array.isArray(d)) USAGE_LOG = d.slice(-50000);
     }
-    if (j.files && j.files['subadmins.json'] && Object.keys(SUBADMINS).length === 0) {
-      try { SUBADMINS = JSON.parse(j.files['subadmins.json'].content); } catch (e) {}
+    if (Object.keys(SUBADMINS).length === 0) {
+      const d = await rawGet('subadmins.json');
+      if (d && typeof d === 'object' && !Array.isArray(d)) SUBADMINS = d;
     }
-  } catch (e) {}
+  } catch (e) { console.error('Gist pull 失败:', e.message); }
 }
 
 function dayKey() { return new Date().toISOString().slice(0, 10); }
@@ -265,7 +300,19 @@ async function loadSessions() {
     console.error('sessions 加载失败:', e.message);
     SESSIONS = [];
   }
+  // 自愈: 账号池为空时, 每 2 分钟后台重试一次 (冷启动瞬时拉取失败无需人工重启)
+  if (!SESSIONS.length && process.env.SESSIONS_GIST) {
+    if (_sessionHealTimer) clearTimeout(_sessionHealTimer);
+    _sessionHealTimer = setTimeout(async () => {
+      if (!SESSIONS.length) {
+        console.log('账号池为空, 后台重试从 Gist 加载 sessions...');
+        await loadSessions();
+        console.log('重试后账号数:', SESSIONS.length);
+      }
+    }, 120000);
+  }
 }
+let _sessionHealTimer = null;
 function saveSessions() {
   // 环境变量模式不写回 (cookie 由环境变量管理); 本地文件模式写回
   if (process.env.SESSIONS_JSON) return;
