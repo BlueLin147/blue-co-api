@@ -359,7 +359,13 @@ async function warmupOnce() {
 }
 function startWarmup() {
   if (WARMUP_INTERVAL <= 0) return;
-  warmupOnce().catch(() => {}); // 启动先跑一次
+  // 首轮预热等账号池加载完再跑 (冷启动时 sessions 是异步从 Gist 拉的)
+  const first = async () => {
+    for (let i = 0; i < 18 && !SESSIONS.length; i++) await new Promise(r => setTimeout(r, 10000));
+    if (!SESSIONS.length) console.log('[warmup] 账号池为空, 跳过首轮预热 (每 6 小时重试)');
+    warmupOnce().catch(() => {});
+  };
+  first();
   setInterval(() => warmupOnce().catch(() => {}), WARMUP_INTERVAL);
 }
 startWarmup();
