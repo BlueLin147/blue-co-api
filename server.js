@@ -87,11 +87,13 @@ async function gistPush(force) {
   if (force) await doPush();
   else _gistDebounce = setTimeout(doPush, 2000);
 }
+let _gistHealTimer = null;
 async function gistPull() {
   if (!GIST_TOKEN || !GIST_ID) return;
   try {
-    const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
-    if (!r.ok) return;
+    let r = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
+    if (!r.ok) r = await fetch(`https://api.github.com/gists/${GIST_ID}`); // token 失效回退匿名 (gist 为 public)
+    if (!r.ok) return false;
     const j = await r.json();
     const files = j.files || {};
     // 用 raw_url 下载, 避免 GitHub API 对超大 content 的截断 (truncated)
@@ -116,7 +118,21 @@ async function gistPull() {
       const d = await rawGet('subadmins.json');
       if (d && typeof d === 'object' && !Array.isArray(d)) SUBADMINS = d;
     }
-  } catch (e) { console.error('Gist pull 失败:', e.message); }
+    return true;
+  } catch (e) { console.error('Gist pull 失败:', e.message); return false; }
+}
+// 冷启动拉取失败(网络抖动/token 失效)时, 每 5 分钟重试直到恢复, 避免内存全空
+function scheduleGistHeal() {
+  if (_gistHealTimer) clearTimeout(_gistHealTimer);
+  _gistHealTimer = setTimeout(async () => {
+    const ok = (Object.keys(CUSTOM_TOKENS).length > 0) || (USAGE_LOG.length > 0) || (Object.keys(SUBADMINS).length > 0);
+    if (!ok) {
+      console.log('Gist 数据为空, 后台重试拉取 tokens/usage...');
+      await gistPull();
+      console.log(`Gist 重试后: tokens ${Object.keys(CUSTOM_TOKENS).length} 个, usage ${USAGE_LOG.length} 条`);
+      scheduleGistHeal();
+    }
+  }, 5 * 60 * 1000);
 }
 
 function dayKey() { return new Date().toISOString().slice(0, 10); }
@@ -1163,6 +1179,7 @@ server.listen(PORT, () => {
       console.log(`Gist 持久化: 已恢复 tokens ${Object.keys(CUSTOM_TOKENS).length} 个, usage ${USAGE_LOG.length} 条`);
       // 恢复后立即同步一次 (防止本地为空覆盖)
       gistPush(true);
+      scheduleGistHeal();
     });
   } else {
     console.log('Gist 持久化: 未配置 (设置 GIST_TOKEN/GIST_ID 后启用)');
