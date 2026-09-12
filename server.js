@@ -52,6 +52,7 @@ if (USAGE_LOG.length > 50000) USAGE_LOG = USAGE_LOG.slice(-50000); // 只留最�
 const GIST_TOKEN = process.env.GIST_TOKEN || '';
 const GIST_ID = process.env.GIST_ID || '';
 let _gistDebounce = null;
+let _gistPushRetryTimer = null;
 async function gistPush(force) {
   if (!GIST_TOKEN || !GIST_ID) return;
   clearTimeout(_gistDebounce);
@@ -79,13 +80,31 @@ async function gistPush(force) {
         } catch (e) {}
       }
       const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-50000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
-      await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const pr = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH', headers: { 'Authorization': 'token ' + GIST_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-    } catch (e) {}
+      if (!pr.ok) {
+        const txt = await pr.text().catch(() => '');
+        console.error(`Gist push 失败 HTTP ${pr.status}: ${txt.slice(0, 200)}`);
+        scheduleGistPushRetry(); // 失败后延迟重试 (避免立即再撞限流)
+        return;
+      }
+      try { const gj = await pr.json(); if (gj && gj.updated_at) console.log(`Gist push OK ${gj.updated_at}`); } catch (e) {}
+    } catch (e) {
+      console.error('Gist push 异常:', e.message);
+      scheduleGistPushRetry();
+    }
   };
   if (force) await doPush();
   else _gistDebounce = setTimeout(doPush, 2000);
+}
+function scheduleGistPushRetry() {
+  if (_gistPushRetryTimer) return;
+  _gistPushRetryTimer = setTimeout(() => {
+    _gistPushRetryTimer = null;
+    console.log('Gist push 重试...');
+    gistPush(true);
+  }, 5 * 60 * 1000);
 }
 let _gistHealTimer = null;
 async function gistPull() {
