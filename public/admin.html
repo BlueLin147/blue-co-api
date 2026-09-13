@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Blue 的 ContactOut · 管理后台</title>
+<title>关键决策人查询系统后台</title>
 <style>
   :root{--indigo:#4f46e5;--indigo2:#6366f1;--ink:#0f172a;--muted:#64748b;--line:#e8eaf1;--soft:#f6f7fb;--green:#16a34a;--red:#dc2626;--amber:#d97706;}
   *{box-sizing:border-box}
@@ -53,16 +53,16 @@
   <div class="hero">
     <div class="logo">⚙️</div>
     <div class="htxt">
-      <h1>ContactOut 管理后台</h1>
+      <h1>关键决策人查询系统后台</h1>
       <div class="sub">口令管理 · 每日限额 · 查询监控</div>
     </div>
   </div>
 
   <div class="card">
     <h3 style="cursor:pointer" onclick="toggleWarmupCard()">🔌 账号 Cookie 状态 <span class="st" id="warmupHint"></span>
-      <span id="warmupCardArr" style="float:right;color:var(--muted)">▼</span>
+      <span id="warmupCardArr" style="float:right;color:var(--muted)">▶</span>
     </h3>
-    <div id="warmupCardBody">
+    <div id="warmupCardBody" style="display:none">
     <div id="warmupAlert" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:13px">
       <b style="color:#b91c1c">⚠️ 有账号 Cookie 失效！</b><br>
       <span class="st">请运行本地续期脚本：<code>node ~/Desktop/DS工作台/scripts/contactout_keepalive.js</code>，然后把生成的 <code>SESSIONS_JSON_latest.txt</code> 内容更新到 Render 环境变量 SESSIONS_JSON，再点 <button class="sm gh" onclick="redeploy()">重新部署</button> 或等待自动部署。</span>
@@ -553,7 +553,7 @@ document.getElementById('createBtn').onclick = () => {
 const OQ_API = 'https://contact.blue147.cn/api/v1/quota';
 async function oqApi(path, opts) {
   const r = await fetch(OQ_API + path, Object.assign({ headers: MASTER ? { 'content-type': 'application/json', 'x-co-token': MASTER } : { 'content-type': 'application/json' } }, opts || {}));
-  if (r.status === 403) throw new Error('需要主口令权限（blue-admin-2026）');
+  if (r.status === 403) throw new Error('需要主口令权限');
   return r.json();
 }
 async function loadOq() {

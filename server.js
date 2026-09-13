@@ -703,11 +703,61 @@ function serveIndex(res) {
     return json(res, 500, { error: 'index.html missing: ' + e.message });
   }
 }
-function serveAdmin(res) {
+// —— /admin 页面门禁 ——
+function readCookie(req, name) {
+  const raw = req.headers.cookie || '';
+  const m = raw.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+function isMasterToken(tk) {
+  if (!tk) return false;
+  if (MASTER_TOKENS.length) return MASTER_TOKENS.indexOf(tk) !== -1;
+  if (TOKENS.length) return TOKENS.indexOf(tk) !== -1;
+  return false;
+}
+const LOGIN_GATE_HTML = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+  + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+  + '<title>登录 · 关键决策人查询系统后台</title><style>'
+  + '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+  + 'background:linear-gradient(160deg,#eef0fb,#f7f8fc);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;color:#0f172a}'
+  + '.box{width:340px;max-width:90vw;background:#fff;border:1px solid #e8eaf1;border-radius:18px;box-shadow:0 18px 50px rgba(15,23,42,.10);padding:28px 26px}'
+  + '.logo{width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,#4f46e5,#6366f1);display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;box-shadow:0 8px 20px rgba(79,70,229,.3);margin-bottom:14px}'
+  + 'h1{font-size:18px;margin:0 0 4px;font-weight:800}p{color:#64748b;font-size:13px;margin:0 0 18px}'
+  + 'input{width:100%;border:1px solid #d8dbe5;border-radius:10px;padding:11px 13px;font-size:14px;outline:none;background:#fdfdfe}input:focus{border-color:#4f46e5}'
+  + 'button{width:100%;margin-top:14px;background:#4f46e5;color:#fff;border:0;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer}button:hover{opacity:.92}'
+  + '.err{color:#dc2626;font-size:12.5px;margin-top:10px;min-height:16px}</style></head><body>'
+  + '<form class="box" onsubmit="var v=document.getElementById(\'t\').value.trim();if(v){location.href=\'/admin?token=\'+encodeURIComponent(v);}return false;">'
+  + '<div class="logo">🔐</div><h1>关键决策人查询系统后台</h1><p>请输入管理口令以继续</p>'
+  + '<input id="t" type="password" placeholder="管理口令" autofocus autocomplete="current-password">'
+  + '<button type="submit">进入后台</button><div class="err" id="e">__ERR__</div></form></body></html>';
+
+function serveAdmin(req, res, u) {
+  const qToken = u.searchParams.get('token') || '';
+  const tk = qToken || readCookie(req, 'co_master') || req.headers['x-co-token'] || '';
+  res.setHeader('cache-control', 'no-store');
+  // 未通过鉴权: 只下发登录页, 绝不下发后台主界面
+  if (!isMasterToken(tk)) {
+    res.statusCode = 401;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    return res.end(LOGIN_GATE_HTML.replace('__ERR__', qToken ? '口令错误，请重试' : ''));
+  }
+  // 通过鉴权: 记住口令(HttpOnly cookie), 30 天免登录
+  const secure = (req.headers['x-forwarded-proto'] === 'https' || (req.socket && req.socket.encrypted)) ? '; Secure' : '';
+  res.setHeader('set-cookie', 'co_master=' + encodeURIComponent(tk) + '; HttpOnly; Path=/; Max-Age=2592000; SameSite=Strict' + secure);
+  // 口令走 URL 进来的, 存好 cookie 后重定向到干净地址, 不让口令留在地址栏/历史
+  if (qToken) {
+    res.statusCode = 302;
+    res.setHeader('location', '/admin');
+    return res.end();
+  }
   try {
+    let html = fs.readFileSync(ADMIN_HTML, 'utf8');
+    // 仅对已鉴权请求注入主口令: 供同域 /admin/api 及跨域 contact.blue147.cn 调用; 未鉴权者看不到
+    const inject = '<script>try{localStorage.setItem(\'co_master_token\',' + JSON.stringify(tk) + ')}catch(e){}</script>';
+    html = html.replace('<body>', '<body>' + inject);
     res.statusCode = 200;
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    return res.end(fs.readFileSync(ADMIN_HTML));
+    return res.end(html);
   } catch (e) {
     return json(res, 500, { error: 'admin.html missing: ' + e.message });
   }
@@ -731,7 +781,7 @@ const server = http.createServer(async (req, res) => {
 
   // 前端页面 (无需 token, 客户打开即用; 查询 API 才需 token)
   if (p === '/' || p === '/index.html') return serveIndex(res);
-  if (p === '/admin' || p === '/admin.html') return serveAdmin(res);
+  if (p === '/admin' || p === '/admin.html') return serveAdmin(req, res, u);
   if (p === '/sub' || p === '/sub.html' || p === '/subadmin' || p === '/subadmin.html') return serveSubAdmin(res);
 
   if (p === '/health') return json(res, 200, { ok: true, accounts: SESSIONS.length, total_email_credit: totalEmailCredit() });
