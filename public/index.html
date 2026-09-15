@@ -284,10 +284,29 @@
           openSettings();
           document.getElementById('tokenStatus').textContent = '口令无效或未设置，请填写正确口令';
         }
-        throw new Error('未授权');
+        const e = new Error('未授权'); e.status = 401; throw e;
       }
-      if (!r.ok) throw new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status));
+      if (!r.ok) { const e = new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status)); e.status = r.status; e.body = j; throw e; }
       return j;
+    }
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    // 批量查询专用: Cloudflare 限流(429且无JSON体)或源站抖动(502/503)时指数退避重试;
+    // 应用额度用满(429 且 code=2003)不重试, 直接抛出.
+    async function queryWithRetry(path, url, maxRetries) {
+      let attempt = 0, delay = 1000;
+      while (true) {
+        try {
+          return await api(path, { method: 'POST', body: JSON.stringify({ profile_url: url }) });
+        } catch (e) {
+          const st = e.status || 0;
+          const isQuota = st === 429 && e.body && e.body.code === 2003;
+          const retryable = !isQuota && (st === 429 || st === 502 || st === 503);
+          if (!retryable || attempt >= maxRetries) throw e;
+          attempt++;
+          await sleep(delay);
+          delay = Math.min(delay * 2, 15000); // 1s→2s→4s→8s→15s 封顶
+        }
+      }
     }
     function fmt(v) { return Number(v).toLocaleString('en-US'); }
     async function refreshCredits() {
@@ -381,12 +400,12 @@
       document.getElementById('runStatus').textContent = '查询中';
       render();
       try {
+        const path = mode === 'email' ? '/api/reveal' : mode === 'phone' ? '/api/phone' : '/api/find';
         for (let i = 0; i < urls.length; i++) {
           progressBar.value = i + 1;
           progressText.textContent = (i + 1) + ' / ' + urls.length;
           try {
-            const path = mode === 'email' ? '/api/reveal' : mode === 'phone' ? '/api/phone' : '/api/find';
-            const j = await api(path, { method: 'POST', body: JSON.stringify({ profile_url: urls[i] }) });
+            const j = await queryWithRetry(path, urls[i], 5);
             const d = j.data || {};
             const emails = normEmails(d.emails);
             const phones = normPhones(d.phones && d.phones.length ? d.phones : (d.phone ? [d.phone] : []));
@@ -396,7 +415,8 @@
             rows.push({ profile: urls[i], emails: [], phones: [], status: 'failed', error: e.message, credit });
           }
           render();
-          refreshCredits();
+          if ((i + 1) % 10 === 0) refreshCredits();   // 降低刷额度频率: 每 10 条刷一次
+          await sleep(250);                             // 节流: 每条间隔 250ms, 避免触发 Cloudflare 限流
         }
       } finally {
         running = false;
