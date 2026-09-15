@@ -59,22 +59,41 @@ async function gistPush(force) {
   _gistDebounce = null;
   const doPush = async () => {
     try {
-      // 防覆盖: 本地 usage 过少而 Gist 上更多时(冷启动拉取失败等), 先合并远端再推, 避免历史日志被清空
-      if (USAGE_LOG.length < 500) {
+      // 防覆盖: 冷启动 pull 失败时本地为空/过少, 先从 Gist 拉回合并再推, 避免 tokens/subadmins/usage 被空数据清空
+      const needUsageGuard = USAGE_LOG.length < 500;
+      const needTokenGuard = Object.keys(CUSTOM_TOKENS).length === 0;
+      const needSubGuard = Object.keys(SUBADMINS).length === 0;
+      if (needUsageGuard || needTokenGuard || needSubGuard) {
         try {
           const gr = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
           if (gr.ok) {
             const gj = await gr.json();
-            const gu = gj.files && gj.files['usage.json'];
-            if (gu && gu.size > 100000) {
-              const rr = await fetch(gu.raw_url);
-              if (rr.ok) {
-                const remote = JSON.parse(await rr.text());
+            const files = gj.files || {};
+            const rawGet = async (name) => {
+              const f = files[name];
+              if (!f || !f.raw_url) return null;
+              try { const rr = await fetch(f.raw_url); if (!rr.ok) return null; return JSON.parse(await rr.text()); } catch (e) { return null; }
+            };
+            // usage: 远端更多则合并去重
+            if (needUsageGuard) {
+              const gu = files['usage.json'];
+              if (gu && gu.size > 100000) {
+                const remote = await rawGet('usage.json');
                 if (Array.isArray(remote) && remote.length > USAGE_LOG.length) {
                   const seen = new Set();
                   USAGE_LOG = remote.concat(USAGE_LOG).filter(x => { const k = String(x.ts) + '|' + (x.token || '') + '|' + (x.profile || ''); if (seen.has(k)) return false; seen.add(k); return true; }).slice(-50000);
                 }
               }
+            }
+            // tokens: 本地为空而远端有 → 用远端, 防止空数据覆盖客户口令 (关键)
+            if (needTokenGuard) {
+              const rt = await rawGet('tokens.json');
+              if (rt && typeof rt === 'object' && !Array.isArray(rt) && Object.keys(rt).length) CUSTOM_TOKENS = rt;
+            }
+            // subadmins: 同理
+            if (needSubGuard) {
+              const rs = await rawGet('subadmins.json');
+              if (rs && typeof rs === 'object' && !Array.isArray(rs) && Object.keys(rs).length) SUBADMINS = rs;
             }
           }
         } catch (e) {}
