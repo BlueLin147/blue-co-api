@@ -375,6 +375,49 @@ function saveSessions() {
 }
 loadSessions();
 
+// —— 上游代理: 让 contactout 请求走住宅/轮换代理, 规避机房 IP 被 Cloudflare 封 403 ——
+// CO_PROXY: 逗号分隔多个代理, 每个格式 ip:port:user:pass 或 http://user:pass@ip:port (NovProxy ISP 格式)
+// 粘性分配: 同一账号固定走同一出口 IP —— 既把负载分散到多个 IP, 又避免"同一 session 从很多 IP 登录"被风控
+let undiciLib = null;
+try { undiciLib = require('undici'); } catch (e) { console.log('[proxy] 未安装 undici, 无法启用代理 (npm install undici)'); }
+let PROXY_AGENTS = [];
+function parseProxyUrl(str) {
+  str = (str || '').trim();
+  if (!str) return null;
+  if (/^(https?|socks5?):\/\//i.test(str)) return str;              // 已是完整 URL
+  const at = str.indexOf('@');
+  if (at > -1 && str.indexOf(':') < at) return 'http://' + str;     // user:pass@ip:port
+  const parts = str.split(':');
+  if (parts.length === 4) { const [ip, port, user, pass] = parts; return 'http://' + encodeURIComponent(user) + ':' + encodeURIComponent(pass) + '@' + ip + ':' + port; } // ip:port:user:pass
+  if (parts.length === 2) return 'http://' + str;                   // ip:port
+  return null;
+}
+function initProxies() {
+  const raw = (process.env.CO_PROXY || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!raw.length) return;
+  if (!undiciLib || !undiciLib.ProxyAgent) { console.log('[proxy] CO_PROXY 已配置但 undici.ProxyAgent 不可用, 将直连'); return; }
+  for (const r of raw) {
+    const url = parseProxyUrl(r);
+    if (!url) { console.log('[proxy] 跳过无法解析的代理: ' + r); continue; }
+    try { PROXY_AGENTS.push(new undiciLib.ProxyAgent(url)); } catch (e) { console.log('[proxy] 代理初始化失败: ' + r.split('@').pop() + ' (' + e.message + ')'); }
+  }
+  console.log('[proxy] 已加载 ' + PROXY_AGENTS.length + ' 个上游代理, contactout 请求将经代理出口');
+}
+initProxies();
+const PROXY_ON = () => PROXY_AGENTS.length > 0;
+function agentForEmail(email) {
+  if (!PROXY_AGENTS.length) return null;
+  const key = String(email || '');
+  let h = 5381; for (let i = 0; i < key.length; i++) h = ((h * 33) ^ key.charCodeAt(i)) >>> 0; // djb2, 账号粘性
+  return PROXY_AGENTS[h % PROXY_AGENTS.length];
+}
+// 统一的 contactout 出口: 有代理走 undici.fetch + 该账号的粘性代理, 无代理走全局 fetch (行为不变)
+function coFetch(url, opts, email) {
+  const a = agentForEmail(email);
+  if (a && undiciLib) return undiciLib.fetch(url, Object.assign({}, opts, { dispatcher: a }));
+  return fetch(url, opts);
+}
+
 // —— 上游限流熔断 ——
 // Cloudflare/ContactOut 会对机房 IP 的高频请求返回 403/429; 这不代表 cookie 失效!
 // 连续被限流时进入冷却: 期间不发任何上游请求 (保护 IP, 避免误烧账号池), 冷却结束自动恢复。
@@ -386,6 +429,8 @@ function upstreamBlocked() { return Date.now() < blockUntil; }
 function blockRemainMs() { return Math.max(0, blockUntil - Date.now()); }
 function blockRemainMin() { return Math.ceil(blockRemainMs() / 60000); }
 function blockMsg() { return '上游 contactout.com 暂时限流本服务 IP' + (blockInfo ? ' (' + blockInfo + ')' : '') + '，约 ' + blockRemainMin() + ' 分钟后自动重试；账号 Cookie 正常，无需处理'; }
+// 客户端(客户/询盘系统)看到的通用文案: 不暴露"限流/IP/403"等技术细节; 后台 admin 仍保留完整状态
+const CLIENT_BLOCKED_MSG = process.env.CLIENT_BLOCKED_MSG || '系统繁忙，请稍后重试';
 function noteUpstreamBlock(reason) {
   blockStreak = Math.min(blockStreak + 1, 10);
   const cool = Math.min(BLOCK_COOLDOWN * Math.pow(2, blockStreak - 1), 6 * 3600 * 1000);
@@ -399,8 +444,11 @@ function noteUpstreamOK() {
   blockStreak = 0; blockUntil = 0; blockInfo = '';
 }
 
-// —— Cookie 预热: 定期调 user/info 保持会话活跃 + 检测失效 ——
+// —— Cookie 预热: 定期抽查 user/info 保持会话活跃 + 检测真失效 ——
+// 每轮只抽查 WARMUP_BATCH 个账号(轮换偏移覆盖全池), 避免一次性全池请求把出口 IP 打到限流
 const WARMUP_INTERVAL = parseInt(process.env.WARMUP_INTERVAL || '21600000', 10); // 默认 6 小时
+const WARMUP_BATCH = parseInt(process.env.WARMUP_BATCH || '80', 10); // 每轮抽查账号数 (0=全池)
+let warmupOffset = 0;
 let warmupState = { lastRun: 0, ok: 0, bad: [], aborted: false, blocked: false };
 
 async function warmupOnce() {
@@ -411,14 +459,20 @@ async function warmupOnce() {
     warmupState = results;
     return results;
   }
+  const total = SESSIONS.length;
+  if (!total) { warmupState = results; return results; }
+  const batch = WARMUP_BATCH > 0 ? Math.min(WARMUP_BATCH, total) : total;
+  const spacing = () => PROXY_ON() ? (300 + Math.random() * 400) : (2200 + Math.random() * 1800); // 有代理出口分散, 可更快
   let consecutiveBlocked = 0;
-  for (const s of SESSIONS) {
+  for (let n = 0; n < batch; n++) {
+    const s = SESSIONS[(warmupOffset + n) % total];
+    if (!s) continue;
     if (!s.cookie) { results.bad.push({ email: s.email || '?', reason: 'no_cookie' }); continue; }
     try {
-      const r = await fetch('https://contactout.com/api/user/info?version=5.6.18', {
+      const r = await coFetch('https://contactout.com/api/user/info?version=5.6.18', {
         headers: { 'Cookie': s.cookie, 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36' },
         signal: AbortSignal.timeout(15000),
-      });
+      }, s.email);
       const t = await r.text();
       let d = null; try { d = JSON.parse(t); } catch (e) {}
       if (r.status === 200 && d && d.user_id && d.user_id > 0) {
@@ -432,10 +486,11 @@ async function warmupOnce() {
         // 200 但未登录 = 真失效
         results.bad.push({ email: s.email || '?', reason: 'not_logged_in' });
       } else if (r.status === 401 || r.status === 403 || r.status === 429) {
-        // 上游限流 (非 cookie 失效)
+        // 上游对出口 IP 限流 (非 cookie 失效)
         consecutiveBlocked++;
         results.bad.push({ email: s.email || '?', reason: 'http_' + r.status, blocked: true });
-        if (consecutiveBlocked >= 3) {
+        // 仅"无代理(单机房 IP)"时连续被限才熔断保护 IP; 有代理则各账号出口不同, 跳过继续
+        if (!PROXY_ON() && consecutiveBlocked >= 3) {
           noteUpstreamBlock('HTTP ' + r.status + ' 连续 ' + consecutiveBlocked + ' 次');
           results.aborted = true; results.blocked = true;
           console.log('[warmup] 连续 ' + consecutiveBlocked + ' 个 HTTP ' + r.status + ', 提前中止本轮');
@@ -447,12 +502,13 @@ async function warmupOnce() {
     } catch (e) {
       results.bad.push({ email: s.email || '?', reason: e.name === 'TimeoutError' ? 'timeout' : e.message });
     }
-    await new Promise(r => setTimeout(r, 2200 + Math.random() * 1800)); // 2.2-4s 随机间隔, 比原来更保守
+    await new Promise(r => setTimeout(r, spacing()));
   }
+  if (!results.aborted) warmupOffset = total ? (warmupOffset + batch) % total : 0; // 下轮换下一批
   if (SESSIONS.length) saveSessions();
   warmupState = results;
   if (typeof warmupState.lastRun !== 'number') warmupState.lastRun = Date.now();
-  console.log('[warmup] ok=' + results.ok + ' bad=' + results.bad.length + (results.bad.length ? ' bad:' + results.bad.map(b => b.email + '(' + b.reason + ')').join(',') : ''));
+  console.log('[warmup] batch=' + batch + '/' + total + ' ok=' + results.ok + ' bad=' + results.bad.length + (PROXY_ON() ? ' (proxy)' : '') + (results.bad.length ? ' bad:' + results.bad.slice(0, 10).map(b => b.email + '(' + b.reason + ')').join(',') : ''));
   return results;
 }
 function startWarmup() {
@@ -543,7 +599,7 @@ async function revealWithAccount(session, item) {
     profile_type: 'regular',
     member_id: '',
   };
-  const res = await fetch('https://contactout.com/api/v5/profiles/reveal', {
+  const res = await coFetch('https://contactout.com/api/v5/profiles/reveal', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -551,7 +607,7 @@ async function revealWithAccount(session, item) {
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
-  });
+  }, session.email);
   const text = await res.text();
   let data = null;
   try { data = JSON.parse(text); } catch (e) {}
@@ -561,9 +617,10 @@ async function revealWithAccount(session, item) {
 // 单条查询: 失败/受限换账号重试 (受限 profile 全场锁死, 试 MAX_ACCT_ATTEMPTS 个账号即判定, 避免全池遍历秒变分钟级)
 const MAX_ACCT_ATTEMPTS = 12;
 async function lookupOne(item) {
-  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
+  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
+  let blocked403 = 0;
   for (let i = 0; i < attempts; i++) {
     const session = await pickAccount();
     if (!session) return { ok: false, error: 'no_credit', msg: '所有账号邮箱额度已用完' };
@@ -608,9 +665,11 @@ async function lookupOne(item) {
         continue; // 换下一个账号
       }
       if (r.status === 401 || r.status === 403 || r.status === 429) {
-        // 上游限流/拦截 (机房 IP 高频请求触发), 不是 cookie 失效 → 熔断冷却, 绝不熔毁账号池
-        noteUpstreamBlock('HTTP ' + r.status);
-        return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
+        // 上游限流/拦截 (出口 IP 高频触发), 不是 cookie 失效 → 绝不熔毁账号池
+        blocked403++;
+        if (PROXY_ON()) continue;                 // 有代理: 该账号出口被限, 换下一个账号(不同出口)重试
+        noteUpstreamBlock('HTTP ' + r.status);     // 无代理: 单机房 IP, 熔断冷却保护 IP
+        return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
       }
       if (r.status === 402 || (r.data && r.data.error && /credit/i.test(String(r.data.error)))) {
         session.credit = 0;
@@ -626,14 +685,16 @@ async function lookupOne(item) {
   if (allRestricted === attempts) {
     return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
   }
+  if (blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 }; // 试了多个账号出口都被限
   return { ok: false, error: 'unknown' };
 }
 
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
 async function lookupPhone(item) {
-  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
+  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
+  let blocked403 = 0;
   for (let i = 0; i < attempts; i++) {
     // 选有电话额度的账号
     let session = null;
@@ -656,7 +717,7 @@ async function lookupPhone(item) {
         fullName: item.full_name || '',
         companies: item.companies || [],
       };
-      const r = await fetch('https://contactout.com/api/find/phone', {
+      const r = await coFetch('https://contactout.com/api/find/phone', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -666,7 +727,7 @@ async function lookupPhone(item) {
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000),
-      });
+      }, session.email);
       const text = await r.text();
       let data = null; try { data = JSON.parse(text); } catch (e) {}
       // 受限 profile (status 900): 免费版按账号随机锁, 换下一个账号重试
@@ -704,9 +765,11 @@ async function lookupPhone(item) {
         };
       }
       if (r.status === 401 || r.status === 403 || r.status === 429) {
-        // 上游限流/拦截, 不是 cookie 失效 → 熔断冷却
-        noteUpstreamBlock('HTTP ' + r.status);
-        return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
+        // 上游限流/拦截, 不是 cookie 失效
+        blocked403++;
+        if (PROXY_ON()) continue;                 // 有代理: 换下一个账号(不同出口)重试
+        noteUpstreamBlock('HTTP ' + r.status);     // 无代理: 熔断冷却保护单 IP
+        return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
       }
       if (r.status === 402 || (data && data.error && /credit/i.test(String(data.error)))) {
         session.phoneCredit = 0; saveSessions(); continue;
@@ -726,6 +789,7 @@ async function lookupPhone(item) {
   if (allRestricted === attempts) {
     return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
   }
+  if (blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 }; // 试了多个账号出口都被限
   return { ok: false, error: 'unknown' };
 }
 

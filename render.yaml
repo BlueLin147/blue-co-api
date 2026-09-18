@@ -16,3 +16,7 @@ services:
       # —— 账号池: 10 个 ContactOut 账号的 cookie+userId 的 JSON 数组 ——
       - key: SESSIONS_JSON
         sync: false
+      # —— 上游代理(可选但强烈建议): 逗号分隔多个, 每个 ip:port:user:pass (NovProxy ISP) ——
+      # 让 contactout 请求走住宅/轮换代理, 规避 Render 机房 IP 被 Cloudflare 封 403; 留空=直连
+      - key: CO_PROXY
+        sync: false
