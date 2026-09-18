@@ -336,7 +336,7 @@ async function loadWarmup() {
     const when = j.lastRun ? new Date(j.lastRun).toLocaleString('zh-CN', { hour12: false }) : '未运行';
     document.getElementById('warmupHint').textContent = '上次预热: ' + when + ' · 有效 ' + j.ok + '/' + (j.accounts ? j.accounts.length : 0);
     const bad = j.bad || [];
-    const isBlockReason = r => /^http_(401|403|429)/.test(r || '') || r === 'timeout';
+    const isBlockReason = r => (r || '') !== 'not_logged_in' && (r || '') !== 'no_cookie';
     const cookieBad = bad.filter(b => !b.blocked && !isBlockReason(b.reason));
     document.getElementById('warmupAlert').style.display = cookieBad.length ? 'block' : 'none';
     const blockEl = document.getElementById('warmupBlock');

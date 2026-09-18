@@ -1325,7 +1325,9 @@ const server = http.createServer(async (req, res) => {
       const bad = warmupState.bad.find(b => b.email === s.email);
       return { email: s.email, userId: s.userId, credit: s.credit, phoneCredit: s.phoneCredit, lastWarmupBad: bad ? bad.reason : null };
     });
-    const hasBad = !!(warmupState.bad && warmupState.bad.some(b => !b.blocked && b.reason !== 'timeout' && !/^http_(401|403|429)/.test(b.reason)));
+    // 只有"真失效"才触发红色告警(需人工续期): 200+user_id=-1(not_logged_in) 或 无 cookie。
+    // 其它一律非失效: 限流(403/429/401)、超时、fetch failed 等网络/代理抖动、5xx 上游错误 —— 都不报警。
+    const hasBad = !!(warmupState.bad && warmupState.bad.some(b => b.reason === 'not_logged_in' || b.reason === 'no_cookie'));
     return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, has_bad: hasBad, blocked: upstreamBlocked(), block_until: blockUntil || null, block_streak: blockStreak, accounts: accountStatus });
   }
 
