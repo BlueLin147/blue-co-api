@@ -67,6 +67,10 @@
       <b style="color:#b91c1c">⚠️ 有账号 Cookie 失效！</b><br>
       <span class="st">请运行本地续期脚本：<code>node ~/Desktop/DS工作台/scripts/contactout_keepalive.js</code>，然后把生成的 <code>SESSIONS_JSON_latest.txt</code> 内容更新到 Render 环境变量 SESSIONS_JSON，再点 <button class="sm gh" onclick="redeploy()">重新部署</button> 或等待自动部署。</span>
     </div>
+    <div id="warmupBlock" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:13px">
+      <b style="color:#b45309">⏳ 上游 IP 被限流（不是 Cookie 失效）</b><br>
+      <span class="st">contactout.com 对机房 IP 高频请求临时返回 403/429。账号 Cookie 全部正常，<b>无需运行续期脚本</b>；服务已自动熔断冷却，到期后自动恢复，无需操作。（<a href="javascript:loadWarmup()">刷新状态</a>）</span>
+    </div>
     <div id="warmupGroups" style="margin-bottom:8px"><span class="st">加载中...</span></div>
     <div id="warmupList" style="display:flex;flex-wrap:wrap;gap:8px"></div>
     </div>
@@ -332,7 +336,19 @@ async function loadWarmup() {
     const when = j.lastRun ? new Date(j.lastRun).toLocaleString('zh-CN', { hour12: false }) : '未运行';
     document.getElementById('warmupHint').textContent = '上次预热: ' + when + ' · 有效 ' + j.ok + '/' + (j.accounts ? j.accounts.length : 0);
     const bad = j.bad || [];
-    document.getElementById('warmupAlert').style.display = bad.length ? 'block' : 'none';
+    const isBlockReason = r => /^http_(401|403|429)/.test(r || '') || r === 'timeout';
+    const cookieBad = bad.filter(b => !b.blocked && !isBlockReason(b.reason));
+    document.getElementById('warmupAlert').style.display = cookieBad.length ? 'block' : 'none';
+    const blockEl = document.getElementById('warmupBlock');
+    if (blockEl) {
+      const blockedNow = !!j.blocked;
+      const blockUntilTxt = j.block_until ? new Date(j.block_until).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      blockEl.style.display = (blockedNow || (!cookieBad.length && bad.length)) ? 'block' : 'none';
+      if (blockedNow && blockUntilTxt) {
+        const st = blockEl.querySelector('.st');
+        if (st) st.innerHTML = 'contactout.com 对机房 IP 高频请求临时返回 403/429（冷却至 ' + blockUntilTxt + '）。账号 Cookie 全部正常，<b>无需运行续期脚本</b>；服务已自动熔断，到期后自动恢复，无需操作。（<a href="javascript:loadWarmup()">刷新状态</a>）';
+      }
+    }
     const list = document.getElementById('warmupList');
     const groups = document.getElementById('warmupGroups');
     list.innerHTML = '';
@@ -345,23 +361,27 @@ async function loadWarmup() {
     }
     const doms = Object.keys(byDomain).sort((x, y) => byDomain[y].length - byDomain[x].length);
     // 摘要
-    const badAll = (j.bad || []).map(b => b.email);
-    const badCount = j.bad ? j.bad.length : 0;
+    const badCount = cookieBad.length;
+    const blockedCount = bad.length - badCount;
     const sum = document.createElement('div');
     sum.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:8px';
     sum.innerHTML = '📊 共 <b>' + (j.accounts ? j.accounts.length : 0) + '</b> 个账号 · ' + doms.length + ' 个域名 · ' +
-      (badCount ? '<span style="color:#b91c1c">失效 ' + badCount + '</span>' : '<span style="color:#15803d">全部正常 ✅</span>');
+      (badCount ? '<span style="color:#b91c1c">失效 ' + badCount + '</span>' : '<span style="color:#15803d">Cookie 全部正常 ✅</span>') +
+      (blockedCount ? ' · <span style="color:#b45309">限流 ' + blockedCount + ' (非失效)</span>' : '');
     groups.appendChild(sum);
     // 域名组
     for (const dom of doms) {
       const accs = byDomain[dom];
-      const domBad = accs.filter(a => a.lastWarmupBad).length;
+      const domBad = accs.filter(a => a.lastWarmupBad && !isBlockReason(a.lastWarmupBad)).length;
+      const domBlocked = accs.filter(a => a.lastWarmupBad && isBlockReason(a.lastWarmupBad)).length;
       const grp = document.createElement('div');
       grp.style.cssText = 'border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;overflow:hidden';
       const head = document.createElement('div');
-      head.style.cssText = 'padding:8px 12px;background:' + (domBad ? '#fef2f2' : '#f9fafb') + ';cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center';
+      head.style.cssText = 'padding:8px 12px;background:' + (domBad ? '#fef2f2' : (domBlocked ? '#fffbeb' : '#f9fafb')) + ';cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center';
       head.innerHTML = '<span><b>' + esc(dom) + '</b> <span class="st">(' + accs.length + '个)</span>' +
-        (domBad ? ' <span style="color:#b91c1c">⚠️ 失效 ' + domBad + '</span>' : ' <span style="color:#15803d">✅</span>') + '</span>' +
+        (domBad ? ' <span style="color:#b91c1c">⚠️ 失效 ' + domBad + '</span>' : '') +
+        (domBlocked ? ' <span style="color:#b45309">⏳ 限流 ' + domBlocked + '</span>' : '') +
+        (!domBad && !domBlocked ? ' <span style="color:#15803d">✅</span>' : '') + '</span>' +
         '<span class="st" id="arr_' + dom.replace(/[^a-z0-9]/gi, '_') + '">▶</span>';
       const body = document.createElement('div');
       body.id = 'grp_' + dom.replace(/[^a-z0-9]/gi, '_');
@@ -370,10 +390,13 @@ async function loadWarmup() {
       const inner = body.firstChild;
       for (const a of accs) {
         const isBad = a.lastWarmupBad;
+        const isBlock = isBad && isBlockReason(isBad);
+        const bg = isBlock ? '#fffbeb' : (isBad ? '#fef2f2' : '#f0fdf4');
+        const bd = isBlock ? '#fde68a' : (isBad ? '#fecaca' : '#bbf7d0');
         const el = document.createElement('div');
-        el.style.cssText = 'background:' + (isBad ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (isBad ? '#fecaca' : '#bbf7d0') + ';border-radius:8px;padding:6px 10px;font-size:12px';
+        el.style.cssText = 'background:' + bg + ';border:1px solid ' + bd + ';border-radius:8px;padding:6px 10px;font-size:12px';
         el.innerHTML = '<b>' + esc(a.email.split('@')[0]) + '</b><br>' +
-          (isBad ? '<span style="color:#b91c1c">❌ ' + esc(isBad) + '</span>' : '<span style="color:#15803d">✅ 正常</span>') +
+          (isBlock ? '<span style="color:#b45309">⏳ 限流(非失效)</span>' : (isBad ? '<span style="color:#b91c1c">❌ ' + esc(isBad) + '</span>' : '<span style="color:#15803d">✅ 正常</span>')) +
           ' <span class="st">邮箱' + (a.credit ?? '-') + ' 电话' + (a.phoneCredit ?? '-') + '</span>';
         inner.appendChild(el);
       }

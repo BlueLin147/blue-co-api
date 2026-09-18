@@ -375,12 +375,43 @@ function saveSessions() {
 }
 loadSessions();
 
+// —— 上游限流熔断 ——
+// Cloudflare/ContactOut 会对机房 IP 的高频请求返回 403/429; 这不代表 cookie 失效!
+// 连续被限流时进入冷却: 期间不发任何上游请求 (保护 IP, 避免误烧账号池), 冷却结束自动恢复。
+const BLOCK_COOLDOWN = parseInt(process.env.BLOCK_COOLDOWN || '600000', 10); // 基础冷却 10 分钟, 连续触发则翻倍 (封顶 6 小时)
+let blockUntil = 0;
+let blockStreak = 0;
+let blockInfo = '';
+function upstreamBlocked() { return Date.now() < blockUntil; }
+function blockRemainMs() { return Math.max(0, blockUntil - Date.now()); }
+function blockRemainMin() { return Math.ceil(blockRemainMs() / 60000); }
+function blockMsg() { return '上游 contactout.com 暂时限流本服务 IP' + (blockInfo ? ' (' + blockInfo + ')' : '') + '，约 ' + blockRemainMin() + ' 分钟后自动重试；账号 Cookie 正常，无需处理'; }
+function noteUpstreamBlock(reason) {
+  blockStreak = Math.min(blockStreak + 1, 10);
+  const cool = Math.min(BLOCK_COOLDOWN * Math.pow(2, blockStreak - 1), 6 * 3600 * 1000);
+  blockUntil = Date.now() + cool;
+  blockInfo = reason;
+  console.log('[block] ' + reason + ' -> 熔断 ' + Math.round(cool / 60000) + ' 分钟 (连续第 ' + blockStreak + ' 次)');
+  return cool;
+}
+function noteUpstreamOK() {
+  if (blockStreak) console.log('[block] 上游已恢复');
+  blockStreak = 0; blockUntil = 0; blockInfo = '';
+}
+
 // —— Cookie 预热: 定期调 user/info 保持会话活跃 + 检测失效 ——
 const WARMUP_INTERVAL = parseInt(process.env.WARMUP_INTERVAL || '21600000', 10); // 默认 6 小时
-let warmupState = { lastRun: 0, ok: 0, bad: [] };
+let warmupState = { lastRun: 0, ok: 0, bad: [], aborted: false, blocked: false };
 
 async function warmupOnce() {
-  const results = { ok: 0, bad: [], lastRun: Date.now() };
+  const results = { ok: 0, bad: [], lastRun: Date.now(), aborted: false, blocked: false };
+  if (upstreamBlocked()) {
+    results.aborted = true; results.blocked = true;
+    console.log('[warmup] 上游限流冷却中, 跳过本轮 (剩 ' + blockRemainMin() + ' 分钟)');
+    warmupState = results;
+    return results;
+  }
+  let consecutiveBlocked = 0;
   for (const s of SESSIONS) {
     if (!s.cookie) { results.bad.push({ email: s.email || '?', reason: 'no_cookie' }); continue; }
     try {
@@ -392,18 +423,31 @@ async function warmupOnce() {
       let d = null; try { d = JSON.parse(t); } catch (e) {}
       if (r.status === 200 && d && d.user_id && d.user_id > 0) {
         // 更新额度（顺便同步）
+        noteUpstreamOK();
+        consecutiveBlocked = 0;
         if (typeof d.credit === 'number') s.credit = d.credit;
         if (typeof d.phoneCredit === 'number') s.phoneCredit = d.phoneCredit;
         results.ok++;
       } else if (r.status === 200 && d && d.user_id === -1) {
+        // 200 但未登录 = 真失效
         results.bad.push({ email: s.email || '?', reason: 'not_logged_in' });
+      } else if (r.status === 401 || r.status === 403 || r.status === 429) {
+        // 上游限流 (非 cookie 失效)
+        consecutiveBlocked++;
+        results.bad.push({ email: s.email || '?', reason: 'http_' + r.status, blocked: true });
+        if (consecutiveBlocked >= 3) {
+          noteUpstreamBlock('HTTP ' + r.status + ' 连续 ' + consecutiveBlocked + ' 次');
+          results.aborted = true; results.blocked = true;
+          console.log('[warmup] 连续 ' + consecutiveBlocked + ' 个 HTTP ' + r.status + ', 提前中止本轮');
+          break;
+        }
       } else {
         results.bad.push({ email: s.email || '?', reason: 'http_' + r.status });
       }
     } catch (e) {
       results.bad.push({ email: s.email || '?', reason: e.name === 'TimeoutError' ? 'timeout' : e.message });
     }
-    await new Promise(r => setTimeout(r, 1500)); // 间隔防风控
+    await new Promise(r => setTimeout(r, 2200 + Math.random() * 1800)); // 2.2-4s 随机间隔, 比原来更保守
   }
   if (SESSIONS.length) saveSessions();
   warmupState = results;
@@ -413,14 +457,19 @@ async function warmupOnce() {
 }
 function startWarmup() {
   if (WARMUP_INTERVAL <= 0) return;
-  // 首轮预热等账号池加载完再跑 (冷启动时 sessions 是异步从 Gist 拉的)
-  const first = async () => {
-    for (let i = 0; i < 18 && !SESSIONS.length; i++) await new Promise(r => setTimeout(r, 10000));
-    if (!SESSIONS.length) console.log('[warmup] 账号池为空, 跳过首轮预热 (每 6 小时重试)');
-    warmupOnce().catch(() => {});
+  const run = async (delay) => {
+    if (delay > 0) await new Promise(r => setTimeout(r, delay));
+    let r = null;
+    try { r = await warmupOnce(); } catch (e) { console.error('[warmup] 异常:', e.message); }
+    const next = (r && r.aborted) ? blockRemainMs() + 60000 : WARMUP_INTERVAL;
+    run(next);
   };
-  first();
-  setInterval(() => warmupOnce().catch(() => {}), WARMUP_INTERVAL);
+  // 首轮预热等账号池加载完再跑 (冷启动时 sessions 是异步从 Gist 拉的)
+  (async () => {
+    for (let i = 0; i < 18 && !SESSIONS.length; i++) await new Promise(r => setTimeout(r, 10000));
+    if (!SESSIONS.length) console.log('[warmup] 账号池为空, 跳过首轮预热 (稍后重试)');
+    run(0);
+  })();
 }
 startWarmup();
 
@@ -512,6 +561,7 @@ async function revealWithAccount(session, item) {
 // 单条查询: 失败/受限换账号重试 (受限 profile 全场锁死, 试 MAX_ACCT_ATTEMPTS 个账号即判定, 避免全池遍历秒变分钟级)
 const MAX_ACCT_ATTEMPTS = 12;
 async function lookupOne(item) {
+  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
@@ -521,6 +571,7 @@ async function lookupOne(item) {
       const r = await revealWithAccount(session, item);
       if (r.status === 200 && r.data && r.data.profile) {
         // 更新额度 (响应里带新 credit)
+        noteUpstreamOK();
         if (typeof r.data.credit === 'number') session.credit = r.data.credit;
         if (r.data.userCredits) {
           if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
@@ -546,6 +597,7 @@ async function lookupOne(item) {
       }
       // 受限 profile (status 900): 免费版按账号随机锁, 换下一个账号重试
       if (r.status === 200 && r.data && r.data.status === 900) {
+        noteUpstreamOK();
         if (r.data.userCredits) {
           if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
           if (typeof r.data.userCredits.phone === 'number') session.phoneCredit = r.data.userCredits.phone;
@@ -555,12 +607,10 @@ async function lookupOne(item) {
         allRestricted++;
         continue; // 换下一个账号
       }
-      if (r.status === 401 || r.status === 403) {
-        // cookie 失效, 标记并试下一个
-        session.cookie = null;
-        session.invalid = true;
-        saveSessions();
-        continue;
+      if (r.status === 401 || r.status === 403 || r.status === 429) {
+        // 上游限流/拦截 (机房 IP 高频请求触发), 不是 cookie 失效 → 熔断冷却, 绝不熔毁账号池
+        noteUpstreamBlock('HTTP ' + r.status);
+        return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
       }
       if (r.status === 402 || (r.data && r.data.error && /credit/i.test(String(r.data.error)))) {
         session.credit = 0;
@@ -581,6 +631,7 @@ async function lookupOne(item) {
 
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
 async function lookupPhone(item) {
+  if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   for (let i = 0; i < attempts; i++) {
@@ -620,12 +671,14 @@ async function lookupPhone(item) {
       let data = null; try { data = JSON.parse(text); } catch (e) {}
       // 受限 profile (status 900): 免费版按账号随机锁, 换下一个账号重试
       if (r.status === 200 && data && data.status === 900) {
+        noteUpstreamOK();
         if (data.userCredits && typeof data.userCredits.phone === 'number') session.phoneCredit = data.userCredits.phone;
         saveSessions();
         allRestricted++;
         continue; // 换下一个账号
       }
       if (r.status === 200 && data && data.phone) {
+        noteUpstreamOK();
         if (typeof data.credit === 'number') session.phoneCredit = data.credit;
         if (data.userCredits) {
           if (typeof data.userCredits.phone === 'number') session.phoneCredit = data.userCredits.phone;
@@ -650,14 +703,17 @@ async function lookupPhone(item) {
           credit_remaining: typeof data.credit === 'number' ? data.credit : session.phoneCredit,
         };
       }
-      if (r.status === 401 || r.status === 403) {
-        session.cookie = null; session.invalid = true; saveSessions(); continue;
+      if (r.status === 401 || r.status === 403 || r.status === 429) {
+        // 上游限流/拦截, 不是 cookie 失效 → 熔断冷却
+        noteUpstreamBlock('HTTP ' + r.status);
+        return { ok: false, error: 'blocked', msg: blockMsg(), credit_used: 0 };
       }
       if (r.status === 402 || (data && data.error && /credit/i.test(String(data.error)))) {
         session.phoneCredit = 0; saveSessions(); continue;
       }
       // 无电话 (200 但 phone null) — 不重试, 正常返回
       if (r.status === 200) {
+        noteUpstreamOK();
         if (data && data.userCredits && typeof data.userCredits.phone === 'number') session.phoneCredit = data.userCredits.phone;
         saveSessions();
         return { ok: false, found: false, linkedin: item.profile_url, msg: 'no phone', credit_used: 1 };
@@ -803,7 +859,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/admin' || p === '/admin.html') return serveAdmin(req, res, u);
   if (p === '/sub' || p === '/sub.html' || p === '/subadmin' || p === '/subadmin.html') return serveSubAdmin(res);
 
-  if (p === '/health') return json(res, 200, { ok: true, accounts: SESSIONS.length, total_email_credit: totalEmailCredit() });
+  if (p === '/health') return json(res, 200, { ok: true, accounts: SESSIONS.length, total_email_credit: totalEmailCredit(), invalid_accounts: SESSIONS.filter(s => s.invalid).length, upstream_blocked: upstreamBlocked(), block_until: blockUntil || undefined });
 
   // 额度
   if (p === '/api/credits') {
@@ -838,6 +894,7 @@ const server = http.createServer(async (req, res) => {
     if (r.ok && r.emails && r.emails.length > 0) consumeQuota(tk, 'email');
     logUsage(req, tk, { kind: 'email', profile: item.profile_url, ok: !!r.ok, email: r.emails ? r.emails.map(e => e.value).join(';') : '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r, credits: { used: r.credit_used, remaining: r.credit_remaining } });
+    if (r.error === 'blocked') return json(res, 503, { code: 3002, error: 'blocked', msg: r.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
     return json(res, 502, { code: 3001, error: r.error, msg: r.msg });
   }
@@ -859,6 +916,7 @@ const server = http.createServer(async (req, res) => {
     if (r.ok && r.phone) consumeQuota(tk, 'phone');
     logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone_all || r.phone || '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r });
+    if (r.error === 'blocked') return json(res, 503, { code: 3002, error: 'blocked', msg: r.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
     if (r.found === false) return json(res, 200, { code: 0, data: r });
     return json(res, 502, { code: 3001, error: r.error, msg: r.msg });
@@ -885,6 +943,9 @@ const server = http.createServer(async (req, res) => {
     if (em_ok) consumeQuota(tk, 'email');
     if (ph_ok) consumeQuota(tk, 'phone');
     logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), em_ok, ph_ok, email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
+    if (em.error === 'blocked' || ph.error === 'blocked') {
+      return json(res, 503, { code: 3002, error: 'blocked', msg: em.error === 'blocked' ? em.msg : ph.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
+    }
     const phoneList = ph.ok ? (ph.phones && ph.phones.length ? ph.phones : (ph.phone ? [ph.phone] : [])) : [];
     return json(res, 200, { code: 0, data: {
       ok: em.ok || ph.ok,
@@ -1200,8 +1261,8 @@ const server = http.createServer(async (req, res) => {
       const bad = warmupState.bad.find(b => b.email === s.email);
       return { email: s.email, userId: s.userId, credit: s.credit, phoneCredit: s.phoneCredit, lastWarmupBad: bad ? bad.reason : null };
     });
-    const hasBad = warmupState.bad && warmupState.bad.length > 0;
-    return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, has_bad: hasBad, accounts: accountStatus });
+    const hasBad = !!(warmupState.bad && warmupState.bad.some(b => !b.blocked && b.reason !== 'timeout' && !/^http_(401|403|429)/.test(b.reason)));
+    return json(res, 200, { ok: true, lastRun: warmupState.lastRun, ok: warmupState.ok, bad: warmupState.bad, has_bad: hasBad, blocked: upstreamBlocked(), block_until: blockUntil || null, block_streak: blockStreak, accounts: accountStatus });
   }
 
   // GET /admin/api/usage?key=xxx&days=1&date=YYYY-MM-DD  查询日志 (可按口令/天数/日期过滤)

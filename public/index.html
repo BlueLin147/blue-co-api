@@ -286,7 +286,7 @@
         }
         const e = new Error('未授权'); e.status = 401; throw e;
       }
-      if (!r.ok) { const e = new Error((j && (j.error || j.msg)) || ('HTTP ' + r.status)); e.status = r.status; e.body = j; throw e; }
+      if (!r.ok) { const e = new Error((j && (j.msg || j.error)) || ('HTTP ' + r.status)); e.status = r.status; e.body = j; throw e; }
       return j;
     }
     const sleep = ms => new Promise(r => setTimeout(r, ms));
