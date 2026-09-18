@@ -622,6 +622,7 @@ async function lookupOne(item) {
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
   let allRestricted = 0;
   let blocked403 = 0;
+  let revealedEmpty = 0;
   for (let i = 0; i < attempts; i++) {
     const session = await pickAccount();
     if (!session) return { ok: false, error: 'no_credit', msg: '所有账号邮箱额度已用完' };
@@ -643,6 +644,11 @@ async function lookupOne(item) {
         const phones = (r.data.profile.phones || []).map(p => ({
           value: p.value || p.number || '', confidence: p.confidence_level || '',
         }));
+        // 免费版对该 profile 只返回资料壳、不给联系方式(通常未扣费) —— 不是"查到", 换个账号也许还能拿到
+        if (emails.length === 0 && phones.length === 0) {
+          revealedEmpty++;
+          continue;
+        }
         return {
           ok: true,
           linkedin: item.profile_url,
@@ -692,6 +698,8 @@ async function lookupOne(item) {
     return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
   }
   if (blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 }; // 试了多个账号出口都被限
+  // 资料存在但免费账号池当前都拿不到邮箱/电话(免费额度已锁) → 明确判为"未查到", 而不是假"查到"
+  if (revealedEmpty > 0) return { ok: false, found: false, linkedin: item.profile_url, msg: 'no contact', credit_used: 0 };
   return { ok: false, error: 'unknown' };
 }
 
@@ -976,6 +984,7 @@ const server = http.createServer(async (req, res) => {
     if (r.ok) return json(res, 200, { code: 0, data: r, credits: { used: r.credit_used, remaining: r.credit_remaining } });
     if (r.error === 'blocked') return json(res, 503, { code: 3002, error: 'blocked', msg: r.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
+    if (r.found === false) return json(res, 200, { code: 0, data: r }); // 资料存在但当前拿不到邮箱 → 正常返回"未查到"(非报错)
     return json(res, 502, { code: 3001, error: r.error, msg: r.msg });
   }
 
