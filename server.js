@@ -581,7 +581,7 @@ async function pickAccount() {
   for (let i = 0; i < SESSIONS.length; i++) {
     const idx = (nextAccount + i) % SESSIONS.length;
     const s = SESSIONS[idx];
-    if (!s.cookie) continue;
+    if (!s.cookie || s.emailOut) continue;
     const credit = typeof s.credit === 'number' ? s.credit : 5;
     if (credit > 0) { nextAccount = (idx + 1) % SESSIONS.length; return s; }
   }
@@ -616,6 +616,7 @@ async function revealWithAccount(session, item) {
 
 // 单条查询: 失败/受限换账号重试 (受限 profile 全场锁死, 试 MAX_ACCT_ATTEMPTS 个账号即判定, 避免全池遍历秒变分钟级)
 const MAX_ACCT_ATTEMPTS = 12;
+const MAX_PHONE_ATTEMPTS = 40; // 电话: "免费额度耗尽"的账号只是被跳过(不计费), 放宽尝试数以穿过额度耗尽账号簇
 async function lookupOne(item) {
   if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
@@ -676,6 +677,11 @@ async function lookupOne(item) {
         saveSessions();
         continue;
       }
+      // 该账号"邮箱搜索额度已用尽" (HTTP 200 但 body status=403 "run out of email searches") → 标记并换下一个账号
+      if (r.data && (r.data.status === 403 || /run out of email|out[_ ]?of[_ ]?email/i.test(String(r.data.message || (r.data.messageData && r.data.messageData.code) || '')))) {
+        session.emailOut = true; session.credit = 0; saveSessions();
+        continue;
+      }
       return { ok: false, error: 'upstream', msg: 'HTTP ' + r.status + ': ' + (r.text || '').slice(0, 200), credit_used: 0 };
     } catch (e) {
       // 网络错误, 换账号重试
@@ -692,16 +698,17 @@ async function lookupOne(item) {
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
 async function lookupPhone(item) {
   if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
-  const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
+  const attempts = Math.min(SESSIONS.length || 1, MAX_PHONE_ATTEMPTS);
   let allRestricted = 0;
   let blocked403 = 0;
+  let exhausted = 0;
   for (let i = 0; i < attempts; i++) {
-    // 选有电话额度的账号
+    // 选有电话额度、且未标记"电话额度耗尽"的账号
     let session = null;
     for (let k = 0; k < SESSIONS.length; k++) {
       const idx = (nextAccount + k) % SESSIONS.length;
       const s = SESSIONS[idx];
-      if (!s.cookie || s.invalid) continue;
+      if (!s.cookie || s.invalid || s.phoneOut) continue;
       const pc = typeof s.phoneCredit === 'number' ? s.phoneCredit : 5;
       if (pc > 0) { session = s; nextAccount = (idx + 1) % SESSIONS.length; break; }
     }
@@ -774,7 +781,15 @@ async function lookupPhone(item) {
       if (r.status === 402 || (data && data.error && /credit/i.test(String(data.error)))) {
         session.phoneCredit = 0; saveSessions(); continue;
       }
-      // 无电话 (200 但 phone null) — 不重试, 正常返回
+      // 该账号"电话搜索额度已用尽" (HTTP 200 但 body status=403 "You've run out of phone searches")
+      // —— 这不是"该 profile 没电话", 而是这个账号不能查了 → 标记 phoneOut, 换下一个账号继续找
+      if (data && (data.status === 403 || /run out of phone|out[_ ]?of[_ ]?phone/i.test(String(data.message || (data.messageData && data.messageData.code) || '')))) {
+        noteUpstreamOK();
+        session.phoneOut = true; session.phoneCredit = 0; saveSessions();
+        exhausted++;
+        continue;
+      }
+      // 无电话 (200 且确实没有电话数据) — 该 profile 没有电话, 不再换账号, 正常返回
       if (r.status === 200) {
         noteUpstreamOK();
         if (data && data.userCredits && typeof data.userCredits.phone === 'number') session.phoneCredit = data.userCredits.phone;
@@ -790,6 +805,7 @@ async function lookupPhone(item) {
     return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
   }
   if (blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 }; // 试了多个账号出口都被限
+  if (exhausted > 0) return { ok: false, error: 'no_credit', msg: '账号电话搜索额度暂时不足，请稍后重试', credit_used: 0 }; // 连试多个账号电话额度都已用尽
   return { ok: false, error: 'unknown' };
 }
 
