@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.18';
+const VERSION = '5.6.19';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -64,9 +64,13 @@ async function gistPush(force) {
       const needTokenGuard = Object.keys(CUSTOM_TOKENS).length === 0;
       const needSubGuard = Object.keys(SUBADMINS).length === 0;
       if (needUsageGuard || needTokenGuard || needSubGuard) {
+        // fail-closed: 守卫需要但拉不到远端时, 绝不 PATCH (宁可推不上去也不能把空数据盖上远端)
+        // 2026-09-29 事故: 冷启动 guard 拉取失败后仍 PATCH, 把 tokens/usage/subadmins 全部清空
+        let guardFailed = false;
         try {
           const gr = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: { 'Authorization': 'token ' + GIST_TOKEN } });
-          if (gr.ok) {
+          if (!gr.ok) guardFailed = true;
+          else {
             const gj = await gr.json();
             const files = gj.files || {};
             const rawGet = async (name) => {
@@ -89,14 +93,21 @@ async function gistPush(force) {
             if (needTokenGuard) {
               const rt = await rawGet('tokens.json');
               if (rt && typeof rt === 'object' && !Array.isArray(rt) && Object.keys(rt).length) CUSTOM_TOKENS = rt;
+              else guardFailed = true;
             }
             // subadmins: 同理
             if (needSubGuard) {
               const rs = await rawGet('subadmins.json');
               if (rs && typeof rs === 'object' && !Array.isArray(rs) && Object.keys(rs).length) SUBADMINS = rs;
+              else guardFailed = true;
             }
           }
-        } catch (e) {}
+        } catch (e) { guardFailed = true; }
+        if (guardFailed) {
+          console.error('Gist 防覆盖守卫失败 (拉不到远端数据), 放弃本次 push 以免清空远端, 5 分钟后重试');
+          scheduleGistPushRetry();
+          return;
+        }
       }
       const body = { files: { 'tokens.json': { content: JSON.stringify(CUSTOM_TOKENS) }, 'usage.json': { content: JSON.stringify(USAGE_LOG.slice(-50000)) }, 'subadmins.json': { content: JSON.stringify(SUBADMINS) } } };
       const pr = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
@@ -1145,17 +1156,18 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('content-disposition', 'attachment; filename="co_backup_' + dayKey() + '.json"');
     return res.end(data);
   }
-  // POST /admin/api/backup/restore  恢复备份 (tokens + usage)
+  // POST /admin/api/backup/restore  恢复备份 (tokens + usage + subadmins)
   if (p === '/admin/api/backup/restore') {
     if (!masterOK(req, u)) return json(res, 401, { error: 'master token required' });
     const bodyTxt = await readBody(req);
     let body = {};
     try { body = JSON.parse(bodyTxt || '{}'); } catch (e) {}
     const data = body.data || body;
-    if (!data || (!data.tokens && !data.usage)) return json(res, 400, { error: 'invalid backup data', hint: 'POST JSON {"data": <备份文件内容>}' });
+    if (!data || (!data.tokens && !data.usage && !data.subadmins)) return json(res, 400, { error: 'invalid backup data', hint: 'POST JSON {"data": <备份文件内容>}' });
     if (data.tokens) { CUSTOM_TOKENS = Object.assign({}, data.tokens); saveJSONFile(TOKENS_FILE, CUSTOM_TOKENS); }
     if (data.usage) { USAGE_LOG = data.usage.slice(-50000); saveJSONFile(USAGE_FILE, USAGE_LOG); }
-    return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length });
+    if (data.subadmins) { SUBADMINS = Object.assign({}, data.subadmins); saveJSONFile(SUBADMIN_FILE, SUBADMINS); }
+    return json(res, 200, { ok: true, tokens: Object.keys(CUSTOM_TOKENS).length, usage: USAGE_LOG.length, subadmins: Object.keys(SUBADMINS).length });
   }
 
   // GET /admin/api/warmup  查看 cookie 预热状态 (含失效警告)
