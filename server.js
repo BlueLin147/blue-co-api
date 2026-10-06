@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.22';
+const VERSION = '5.6.23';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -843,8 +843,9 @@ async function lookupOne(item) {
   const r1 = await tryRound();
   if (r1.win) return r1.win;
   if (r1.fail) return r1.fail;
-  // 第一轮没成功: 错峰 15 秒补试一轮 (900 锁按账号随机, 等风控窗口错开+冷却池已标记本轮的锁, 换批账号可救回相当比例)
-  await new Promise(r => setTimeout(r, 15000));
+  // 第一轮没成功: 错峰补试一轮 (900 锁按账号随机, 等风控窗口错开+冷却池已标记本轮的锁, 换批账号可救回相当比例)
+  const RETRY_WAIT_MS = parseInt(process.env.RETRY_WAIT_MS || '8000', 10);
+  await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
   const r2 = await tryRound();
   if (r2.win) return r2.win;
   if (r2.fail) return r2.fail;
