@@ -232,6 +232,12 @@ async function loadTokens() {
     const j = await api('/admin/api/tokens');
     const tb = document.getElementById('tbody');
     tb.innerHTML = '';
+    if (j.recovering) {
+      // Gist 数据还没拉回 (冷启动中), 提示自动恢复而不是显示空列表吓人
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="7" class="st" style="text-align:center;padding:16px">⏳ 口令数据从云端恢复中 (冷启动), 约 1 分钟内自动恢复, <a href="javascript:loadTokens()">立即刷新</a></td>';
+      tb.appendChild(tr);
+    }
     const sel = document.getElementById('logToken');
     sel.innerHTML = '<option value="">全部</option>';
     for (const t of j.tokens) {
@@ -334,7 +340,12 @@ async function loadWarmup() {
   try {
     const j = await api('/admin/api/warmup');
     const when = j.lastRun ? new Date(j.lastRun).toLocaleString('zh-CN', { hour12: false }) : '未运行';
-    document.getElementById('warmupHint').textContent = '上次预热: ' + when + ' · 有效 ' + j.ok + '/' + (j.accounts ? j.accounts.length : 0);
+    // 池刚加载完、上一轮预热空跑(ok=0 且无坏账号)时, 提示"预热待跑"而不是误导性的"有效 0/1675"
+    const accN = j.accounts ? j.accounts.length : 0;
+    const ranEmpty = !j.ok && !(j.bad || []).length && accN > 0;
+    document.getElementById('warmupHint').textContent = ranEmpty
+      ? '上次预热: ' + when + ' · 池刚加载, 预热待跑 (' + accN + ' 个账号, 自动补跑中)'
+      : '上次预热: ' + when + ' · 有效 ' + j.ok + '/' + accN;
     const bad = j.bad || [];
     const isBlockReason = r => (r || '') !== 'not_logged_in' && (r || '') !== 'no_cookie';
     const cookieBad = bad.filter(b => !b.blocked && !isBlockReason(b.reason));
@@ -436,7 +447,12 @@ async function loadSubAdmins() {
     const j = await api('/admin/api/subadmins');
     const tb = document.getElementById('subBody');
     tb.innerHTML = '';
-    if (!j.subadmins.length) { tb.innerHTML = '<tr><td colspan="8" class="st" style="text-align:center;padding:16px">还没有子管理员</td></tr>'; return; }
+    if (!j.subadmins.length) {
+      tb.innerHTML = j.recovering
+        ? '<tr><td colspan="8" class="st" style="text-align:center;padding:16px">⏳ 子管理员数据从云端恢复中 (冷启动), 约 1 分钟内自动恢复, <a href="javascript:loadSubAdmins()">立即刷新</a></td></tr>'
+        : '<tr><td colspan="8" class="st" style="text-align:center;padding:16px">还没有子管理员</td></tr>';
+      return;
+    }
     for (const s of j.subadmins) {
       const tr = document.createElement('tr');
       tr.innerHTML =

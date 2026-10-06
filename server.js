@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.19';
+const VERSION = '5.6.20';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -171,14 +171,26 @@ async function gistPull() {
   } catch (e) { console.error('Gist pull 失败:', e.message); return false; }
 }
 // 冷启动拉取失败(网络抖动/token 失效)时, 每 5 分钟重试直到恢复, 避免内存全空
+// 每块数据独立判断是否补齐, 避免"usage 有数据就掩盖 tokens 空"的情况
+let _gistHealRounds = 0;
+function gistDataMissing() {
+  return {
+    tokens: Object.keys(CUSTOM_TOKENS).length === 0,
+    usage: USAGE_LOG.length === 0,
+    subadmins: Object.keys(SUBADMINS).length === 0,
+  };
+}
 function scheduleGistHeal() {
   if (_gistHealTimer) clearTimeout(_gistHealTimer);
   _gistHealTimer = setTimeout(async () => {
-    const ok = (Object.keys(CUSTOM_TOKENS).length > 0) || (USAGE_LOG.length > 0) || (Object.keys(SUBADMINS).length > 0);
-    if (!ok) {
-      console.log('Gist 数据为空, 后台重试拉取 tokens/usage...');
+    const miss = gistDataMissing();
+    if (miss.tokens || miss.usage || miss.subadmins) {
+      console.log('Gist 数据缺块, 后台重试拉取:', JSON.stringify(miss));
       await gistPull();
-      console.log(`Gist 重试后: tokens ${Object.keys(CUSTOM_TOKENS).length} 个, usage ${USAGE_LOG.length} 条`);
+      console.log(`Gist 重试后: tokens ${Object.keys(CUSTOM_TOKENS).length} 个, usage ${USAGE_LOG.length} 条, subadmins ${Object.keys(SUBADMINS).length} 个`);
+      // subadmins 合法状态可为空(用户删光), 连拉 6 轮(30 分钟)后停止, 避免无限重试
+      _gistHealRounds++;
+      if (_gistHealRounds >= 6 && !miss.tokens && !miss.usage) return;
       scheduleGistHeal();
     }
   }, 5 * 60 * 1000);
@@ -355,7 +367,7 @@ async function loadSessions() {
     if (process.env.SESSIONS_JSON) {
       raw = process.env.SESSIONS_JSON;
     } else if (process.env.SESSIONS_GIST) {
-      if (await gistLoadSessions()) return;
+      if (await gistLoadSessions()) { setTimeout(maybeRerunWarmupAfterPoolLoad, 0); return; }
       raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
     } else {
       raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
@@ -365,6 +377,8 @@ async function loadSessions() {
     console.error('sessions 加载失败:', e.message);
     SESSIONS = [];
   }
+  // setTimeout(0): 保证 warmupState 等模块级变量已完成声明 (SESSIONS_JSON 同步模式下 loadSessions 会早于声明执行)
+  if (SESSIONS.length) setTimeout(maybeRerunWarmupAfterPoolLoad, 0);
   // 自愈: 账号池为空时, 每 2 分钟后台重试一次 (冷启动瞬时拉取失败无需人工重启)
   if (!SESSIONS.length && process.env.SESSIONS_GIST) {
     if (_sessionHealTimer) clearTimeout(_sessionHealTimer);
@@ -461,6 +475,29 @@ const WARMUP_INTERVAL = parseInt(process.env.WARMUP_INTERVAL || '21600000', 10);
 const WARMUP_BATCH = parseInt(process.env.WARMUP_BATCH || '80', 10); // 每轮抽查账号数 (0=全池)
 let warmupOffset = 0;
 let warmupState = { lastRun: 0, ok: 0, bad: [], aborted: false, blocked: false };
+let _warmupRunning = false;
+
+// 账号池加载完成后, 若最近一轮预热是在池为空时跑的 (ok=0 且无坏账号记录), 补跑一轮真实抽查
+// 修复: 冷启动时预热空跑 -> 页面长时间显示"有效 0/1675"误导
+function maybeRerunWarmupAfterPoolLoad() {
+  if (_warmupRunning) return;
+  if (!SESSIONS.length) return;
+  if (warmupState.ok > 0 || (warmupState.bad && warmupState.bad.length > 0)) return;
+  // 延迟 5 秒, 若 startWarmup 首轮先起跑就让它跑 (避免双轮并发)
+  setTimeout(async () => {
+    if (_warmupRunning) return;
+    if (warmupState.ok > 0 || (warmupState.bad && warmupState.bad.length > 0)) return;
+    console.log('[warmup] 账号池加载完成且上次预热空跑, 补跑一轮');
+    try { await runWarmupOnce(); } catch (e) { console.error('[warmup] 补跑异常:', e.message); }
+  }, 5000);
+}
+
+// 预热互斥入口: 防止定时轮与补跑轮并发交错写 warmupState
+async function runWarmupOnce() {
+  if (_warmupRunning) return null;
+  _warmupRunning = true;
+  try { return await warmupOnce(); } finally { _warmupRunning = false; }
+}
 
 async function warmupOnce() {
   const results = { ok: 0, bad: [], lastRun: Date.now(), aborted: false, blocked: false };
@@ -527,7 +564,7 @@ function startWarmup() {
   const run = async (delay) => {
     if (delay > 0) await new Promise(r => setTimeout(r, delay));
     let r = null;
-    try { r = await warmupOnce(); } catch (e) { console.error('[warmup] 异常:', e.message); }
+    try { r = await runWarmupOnce(); } catch (e) { console.error('[warmup] 异常:', e.message); }
     const next = (r && r.aborted) ? blockRemainMs() + 60000 : WARMUP_INTERVAL;
     run(next);
   };
@@ -543,6 +580,7 @@ startWarmup();
 // 账号轮换状态
 let nextAccount = 0;
 let queue = [];       // 并发队列: { fn, resolve, reject }
+const QUEUE_MAX = parseInt(process.env.QUEUE_MAX || '300', 10); // 排队上限, 防止单个口令大批量提交把队列塞爆拖垮所有人
 
 // —— 工具 ——
 function cors(res) {
@@ -832,9 +870,17 @@ async function lookupPhone(item) {
 let activeJobs = 0;
 async function enqueue(fn) {
   return new Promise((resolve, reject) => {
+    if (queue.length >= QUEUE_MAX) { reject(new Error('QUEUE_FULL')); return; }
     queue.push({ fn, resolve, reject });
     pump();
   });
+}
+// 队列满时转成 { _busy: true }, 调用方返回 503 而不是 500/挂起
+async function enqueueOrBusy(fn) {
+  try { return await enqueue(fn); } catch (e) {
+    if (e && e.message === 'QUEUE_FULL') return { _busy: true };
+    throw e;
+  }
 }
 function pump() {
   while (queue.length > 0 && activeJobs < MAX_CONCURRENCY) {
@@ -989,7 +1035,8 @@ const server = http.createServer(async (req, res) => {
     if (!items.length) return json(res, 400, { error: 'no valid linkedin url', hint: 'POST JSON {"profile_url":"https://www.linkedin.com/in/xxx"}' });
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
-    const r = await enqueue(() => lookupOne(item));
+    const r = await enqueueOrBusy(() => lookupOne(item));
+    if (r._busy) return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试' });
     if (r.ok && r.emails && r.emails.length > 0) consumeQuota(tk, 'email');
     logUsage(req, tk, { kind: 'email', profile: item.profile_url, ok: !!r.ok, email: r.emails ? r.emails.map(e => e.value).join(';') : '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r, credits: { used: r.credit_used, remaining: r.credit_remaining } });
@@ -1012,7 +1059,8 @@ const server = http.createServer(async (req, res) => {
     if (!items.length) return json(res, 400, { error: 'no valid linkedin url', hint: 'POST JSON {"profile_url":"https://www.linkedin.com/in/xxx"}' });
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
-    const r = await enqueue(() => lookupPhone(item));
+    const r = await enqueueOrBusy(() => lookupPhone(item));
+    if (r._busy) return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试' });
     if (r.ok && r.phone) consumeQuota(tk, 'phone');
     logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone_all || r.phone || '', restricted: r.error === 'restricted' });
     if (r.ok) return json(res, 200, { code: 0, data: r });
@@ -1037,7 +1085,8 @@ const server = http.createServer(async (req, res) => {
     if (!items.length) return json(res, 400, { error: 'no valid linkedin url', hint: 'POST JSON {"profile_url":"https://www.linkedin.com/in/xxx"}' });
     const item = items[0];
     if (body.full_name) item.full_name = String(body.full_name);
-    const [em, ph] = await Promise.all([enqueue(() => lookupOne(item)), enqueue(() => lookupPhone(item))]);
+    const [em, ph] = await Promise.all([enqueueOrBusy(() => lookupOne(item)), enqueueOrBusy(() => lookupPhone(item))]);
+    if (em._busy || ph._busy) return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试' });
     const em_ok = !!(em.ok && em.emails && em.emails.length > 0);
     const ph_ok = !!(ph.ok && ph.phone);
     if (em_ok) consumeQuota(tk, 'email');
@@ -1073,14 +1122,25 @@ const server = http.createServer(async (req, res) => {
     const input = body.profiles || body.urls || body.links || [];
     const items = parseLinks(input);
     if (!items.length) return json(res, 400, { error: 'no valid linkedin urls', hint: 'POST JSON {"profiles":["url1","url2"]}' });
+    const BATCH_MAX = parseInt(process.env.BATCH_MAX || '200', 10); // 单次批量上限, 防一个口令一次塞几百条占满队列
+    if (items.length > BATCH_MAX) {
+      return json(res, 400, { code: 2004, error: 'batch too large', msg: '单次最多 ' + BATCH_MAX + ' 条, 请分批提交' });
+    }
     const totalCredit = totalEmailCredit();
     if (items.length > totalCredit) {
       return json(res, 402, { code: 2002, error: 'not enough credit', need: items.length, have: totalCredit });
     }
     const results = [];
     for (const item of items) {
-      const r = await enqueue(() => lookupOne(item));
-      results.push(r);
+      try {
+        const r = await enqueue(() => lookupOne(item));
+        results.push(r);
+      } catch (e) {
+        if (e.message === 'QUEUE_FULL') {
+          return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试', done: results.length });
+        }
+        throw e;
+      }
     }
     const okCount = results.filter(r => r.ok && r.emails && r.emails.length > 0).length;
     consumeQuota(tk, 'email', okCount);
@@ -1102,7 +1162,8 @@ const server = http.createServer(async (req, res) => {
       return { key: k, name: t.name, email_limit: t.email_limit || 0, phone_limit: t.phone_limit || 0, email_used: t.day === today ? (t.email_used || 0) : 0, phone_used: t.day === today ? (t.phone_used || 0) : 0, email_total: et, phone_total: pt, created: t.created, active: t.active !== false };
     });
     const envTokens = TOKENS.map((k, i) => ({ key: k, name: '环境变量口令 #' + (i + 1), email_limit: 0, phone_limit: 0, email_used: 0, phone_used: 0, created: 0, active: true, isEnv: true }));
-    return json(res, 200, { ok: true, tokens: list.concat(envTokens) });
+    // recovering: Gist 数据尚未拉回(冷启动中), 前端据此提示"数据恢复中"而不是显示空列表
+    return json(res, 200, { ok: true, tokens: list.concat(envTokens), recovering: list.length === 0 && !!GIST_ID });
   }
   // POST /admin/api/tokens  {"name":"客户A","email_limit":50,"phone_limit":50}
   if (p === '/admin/api/tokens' && req.method === 'POST') {
@@ -1184,7 +1245,7 @@ const server = http.createServer(async (req, res) => {
         email_total: s.email_total_used || 0, phone_total: s.phone_total_used || 0,
         tokens: Object.keys(s.tokens || {}).length, created: s.created, active: s.active !== false };
     });
-    return json(res, 200, { ok: true, subadmins: list });
+    return json(res, 200, { ok: true, subadmins: list, recovering: list.length === 0 && !!GIST_ID });
   }
   // POST /admin/api/subadmins  主管理员: 创建子管理员 {"name":"代理A","password":"123456","email_limit":1170,"phone_limit":1170}
   if (p === '/admin/api/subadmins' && req.method === 'POST') {
@@ -1433,6 +1494,16 @@ server.listen(PORT, () => {
       gistPush(true);
       scheduleGistHeal();
     });
+    // 冷启动快速自愈: 首拉失败时 10s/30s/90s 退避重试, 不让 admin 空数据晾 5 分钟
+    (async function gistFastHeal() {
+      for (const delay of [10000, 30000, 90000]) {
+        await new Promise(r => setTimeout(r, delay));
+        const miss = gistDataMissing();
+        if (!miss.tokens && !miss.usage) break;
+        console.log('Gist 首拉未完成, 快速重试:', JSON.stringify(miss));
+        await gistPull();
+      }
+    })();
   } else {
     console.log('Gist 持久化: 未配置 (设置 GIST_TOKEN/GIST_ID 后启用)');
   }
