@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.20';
+const VERSION = '5.6.21';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -179,6 +179,21 @@ function gistDataMissing() {
     usage: USAGE_LOG.length === 0,
     subadmins: Object.keys(SUBADMINS).length === 0,
   };
+}
+// 按需即时补拉: 数据缺块时由当前请求同步等一次 Gist (1-2 秒), 而不是让请求拿空数据
+// 并发请求共用同一个拉取 promise, 只拉一次; 8 秒超时兜底, 失败交给 5 分钟 heal
+let _pullPromise = null;
+async function gistPullOnce() {
+  if (!GIST_TOKEN || !GIST_ID) return false;
+  const miss = gistDataMissing();
+  if (!miss.tokens && !miss.usage && !miss.subadmins) return false;
+  if (_pullPromise) { await _pullPromise; return true; }
+  _pullPromise = Promise.race([
+    gistPull(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('gist pull timeout')), 8000)),
+  ]).catch(e => { console.error('Gist 按需补拉失败:', e.message); }).finally(() => { _pullPromise = null; });
+  await _pullPromise;
+  return true;
 }
 function scheduleGistHeal() {
   if (_gistHealTimer) clearTimeout(_gistHealTimer);
@@ -392,6 +407,13 @@ async function loadSessions() {
   }
 }
 let _sessionHealTimer = null;
+// 按需即时加载账号池 (冷启动查询请求来了当场拉, 并发共用一次)
+let _sessPromise = null;
+async function loadSessionsOnce() {
+  if (_sessPromise) return _sessPromise;
+  _sessPromise = loadSessions().finally(() => { _sessPromise = null; });
+  return _sessPromise;
+}
 function saveSessions() {
   // 环境变量模式不写回 (cookie 由环境变量管理); 本地文件模式写回
   if (process.env.SESSIONS_JSON) return;
@@ -998,6 +1020,13 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   const u = new URL(req.url, 'http://x');
   const p = u.pathname;
+
+  // 冷启动数据缺块时, 请求按需即时补拉 (1-2 秒), 而不是拿空数据/401 空等定时重试
+  if (p.startsWith('/admin/api/')) await gistPullOnce();
+  if (p.startsWith('/api/')) {
+    await gistPullOnce();
+    if (!SESSIONS.length && process.env.SESSIONS_GIST) await loadSessionsOnce();
+  }
 
   // 前端页面 (无需 token, 客户打开即用; 查询 API 才需 token)
   if (p === '/' || p === '/index.html') return serveIndex(res);
