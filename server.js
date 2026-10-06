@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.23';
+const VERSION = '5.6.24';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -467,29 +467,31 @@ function initProxies() {
     if (process.env.CO_PROXY || PROXY_TEMPLATE) console.log('[proxy] CO_PROXY 已配置但 undici.ProxyAgent 不可用, 将直连');
     return;
   }
-  // 自动会话模式优先 (模板含 {sid}), CO_PROXY 静态配置保留作回退
+  // 静态代理 (CO_PROXY, 逗号分隔): 永不过期、永不替换 —— 账号-IP 画像稳定的安全岛
+  const staticAgents = [];
+  const raw = (process.env.CO_PROXY || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const r of raw) {
+    const url = parseProxyUrl(r);
+    if (!url) { console.log('[proxy] 跳过无法解析的代理: ' + r); continue; }
+    try { staticAgents.push(new undiciLib.ProxyAgent(url)); } catch (e) { console.log('[proxy] 代理初始化失败: ' + r.split('@').pop() + ' (' + e.message + ')'); }
+  }
+  // 动态会话 (CO_PROXY_TEMPLATE 含 {sid}): 定期刷新只替换动态部分, 静态岛不动
   if (PROXY_TEMPLATE && PROXY_TEMPLATE.includes('{sid}')) {
-    PROXY_AGENTS = buildAutoAgents();
-    console.log('[proxy] 自动会话模式: 已生成 ' + PROXY_AGENTS.length + ' 个 sid 代理 (TTL ' + PROXY_TTL_MIN + ' 分钟, 每 ' + PROXY_REFRESH_MIN + ' 分钟刷新)');
+    PROXY_AGENTS = staticAgents.concat(buildAutoAgents());
+    console.log('[proxy] 混合模式: 静态 ' + staticAgents.length + ' 个 + 动态 ' + (PROXY_AGENTS.length - staticAgents.length) + ' 个 (TTL ' + PROXY_TTL_MIN + ' 分钟, 每 ' + PROXY_REFRESH_MIN + ' 分钟刷新动态部分)');
     setInterval(() => {
       try {
         const fresh = buildAutoAgents();
         if (fresh.length) {
-          PROXY_AGENTS = fresh;
-          console.log('[proxy] 会话刷新: 已热切换 ' + fresh.length + ' 个新 sid 代理');
+          PROXY_AGENTS = staticAgents.concat(fresh);
+          console.log('[proxy] 会话刷新: 动态部分已热切换 ' + fresh.length + ' 个新 sid (静态 ' + staticAgents.length + ' 个不变)');
         }
       } catch (e) { console.error('[proxy] 刷新失败:', e.message); }
     }, PROXY_REFRESH_MIN * 60 * 1000).unref();
     return;
   }
-  const raw = (process.env.CO_PROXY || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (!raw.length) return;
-  for (const r of raw) {
-    const url = parseProxyUrl(r);
-    if (!url) { console.log('[proxy] 跳过无法解析的代理: ' + r); continue; }
-    try { PROXY_AGENTS.push(new undiciLib.ProxyAgent(url)); } catch (e) { console.log('[proxy] 代理初始化失败: ' + r.split('@').pop() + ' (' + e.message + ')'); }
-  }
-  console.log('[proxy] 已加载 ' + PROXY_AGENTS.length + ' 个上游代理, contactout 请求将经代理出口');
+  PROXY_AGENTS = staticAgents;
+  if (staticAgents.length) console.log('[proxy] 已加载 ' + staticAgents.length + ' 个上游代理, contactout 请求将经代理出口');
 }
 initProxies();
 const PROXY_ON = () => PROXY_AGENTS.length > 0;
