@@ -21,7 +21,7 @@ const TOKENS = (process.env.ACCESS_TOKEN || '').split(',').map(s => s.trim()).fi
 const MASTER_TOKENS = (process.env.MASTER_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean);
 const SESSIONS_FILE = process.env.SESSIONS_FILE || path.join(__dirname, 'sessions.json');
 const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
-const VERSION = '5.6.21';
+const VERSION = '5.6.22';
 
 // —— 令牌与用量存储 ——
 const TOKENS_FILE = process.env.TOKENS_FILE || path.join(__dirname, 'tokens.json');
@@ -439,10 +439,51 @@ function parseProxyUrl(str) {
   if (parts.length === 2) return 'http://' + str;                   // ip:port
   return null;
 }
+// 自动会话模式: CO_PROXY_TEMPLATE 含 {sid} 占位符时启用。
+// NovProxy 动态流量粘性会话最长 120 分钟, 到期后 IP 不再粘性(会轮换撞风控)。
+// 这里每 CO_PROXY_REFRESH_MIN 分钟生成一批新随机 sid 并热切换, 旧会话到期前无缝轮换。
+const PROXY_TEMPLATE = process.env.CO_PROXY_TEMPLATE || '';
+const PROXY_COUNT = parseInt(process.env.CO_PROXY_COUNT || '10', 10);
+const PROXY_REFRESH_MIN = parseInt(process.env.CO_PROXY_REFRESH_MIN || '100', 10);
+const PROXY_TTL_MIN = parseInt(process.env.CO_PROXY_TTL_MIN || '120', 10);
+function randSid(n) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let s = '';
+  for (let i = 0; i < n; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+function buildAutoAgents() {
+  if (!undiciLib || !undiciLib.ProxyAgent) return [];
+  const agents = [];
+  for (let i = 0; i < PROXY_COUNT; i++) {
+    const url = parseProxyUrl(PROXY_TEMPLATE.replace(/\{sid\}/g, randSid(8)).replace(/\{ttl\}/g, String(PROXY_TTL_MIN)));
+    if (!url) { console.log('[proxy] 模板解析失败: ' + PROXY_TEMPLATE.slice(0, 60)); return []; }
+    try { agents.push(new undiciLib.ProxyAgent(url)); } catch (e) {}
+  }
+  return agents;
+}
 function initProxies() {
+  if (!undiciLib || !undiciLib.ProxyAgent) {
+    if (process.env.CO_PROXY || PROXY_TEMPLATE) console.log('[proxy] CO_PROXY 已配置但 undici.ProxyAgent 不可用, 将直连');
+    return;
+  }
+  // 自动会话模式优先 (模板含 {sid}), CO_PROXY 静态配置保留作回退
+  if (PROXY_TEMPLATE && PROXY_TEMPLATE.includes('{sid}')) {
+    PROXY_AGENTS = buildAutoAgents();
+    console.log('[proxy] 自动会话模式: 已生成 ' + PROXY_AGENTS.length + ' 个 sid 代理 (TTL ' + PROXY_TTL_MIN + ' 分钟, 每 ' + PROXY_REFRESH_MIN + ' 分钟刷新)');
+    setInterval(() => {
+      try {
+        const fresh = buildAutoAgents();
+        if (fresh.length) {
+          PROXY_AGENTS = fresh;
+          console.log('[proxy] 会话刷新: 已热切换 ' + fresh.length + ' 个新 sid 代理');
+        }
+      } catch (e) { console.error('[proxy] 刷新失败:', e.message); }
+    }, PROXY_REFRESH_MIN * 60 * 1000).unref();
+    return;
+  }
   const raw = (process.env.CO_PROXY || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!raw.length) return;
-  if (!undiciLib || !undiciLib.ProxyAgent) { console.log('[proxy] CO_PROXY 已配置但 undici.ProxyAgent 不可用, 将直连'); return; }
   for (const r of raw) {
     const url = parseProxyUrl(r);
     if (!url) { console.log('[proxy] 跳过无法解析的代理: ' + r); continue; }
@@ -647,8 +688,25 @@ function parseLinks(input) {
 }
 
 // —— 查询核心: 选一个有额度的账号调用 reveal ——
+// 900 受限冷却: 账号被 ContactOut 900 锁后冷却一段时间不再参与抽样,
+// 抽样 12 个永远从"没被锁的账号"里抽, 大幅提高撞到可用账号的概率
+const RESTRICT_COOLDOWN_MS = parseInt(process.env.RESTRICT_COOLDOWN_MS || String(45 * 60 * 1000), 10);
 async function pickAccount() {
-  // 找到还有邮箱额度的账号
+  const usable = (s) => {
+    if (!s.cookie || s.emailOut) return false;
+    if (s.restrictedUntil && Date.now() < s.restrictedUntil) return false; // 冷却中
+    const credit = typeof s.credit === 'number' ? s.credit : 5;
+    return credit > 0;
+  };
+  // 第一遍: 只从健康账号抽 (跳过 900 冷却中的)
+  for (let i = 0; i < SESSIONS.length; i++) {
+    const idx = (nextAccount + i) % SESSIONS.length;
+    const s = SESSIONS[idx];
+    if (!usable(s)) continue;
+    nextAccount = (idx + 1) % SESSIONS.length;
+    return s;
+  }
+  // 第二遍: 冷却池之外无可用账号时忽略冷却兜底 (宁可用冷却账号也不停摆)
   for (let i = 0; i < SESSIONS.length; i++) {
     const idx = (nextAccount + i) % SESSIONS.length;
     const s = SESSIONS[idx];
@@ -691,87 +749,106 @@ const MAX_PHONE_ATTEMPTS = 40; // 电话: "免费额度耗尽"的账号只是被
 async function lookupOne(item) {
   if (upstreamBlocked()) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
   const attempts = Math.min(SESSIONS.length || 1, MAX_ACCT_ATTEMPTS);
-  let allRestricted = 0;
-  let blocked403 = 0;
-  let revealedEmpty = 0;
-  for (let i = 0; i < attempts; i++) {
-    const session = await pickAccount();
-    if (!session) return { ok: false, error: 'no_credit', msg: '所有账号邮箱额度已用完' };
-    try {
-      const r = await revealWithAccount(session, item);
-      if (r.status === 200 && r.data && r.data.profile) {
-        // 更新额度 (响应里带新 credit)
-        noteUpstreamOK();
-        if (typeof r.data.credit === 'number') session.credit = r.data.credit;
-        if (r.data.userCredits) {
-          if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
-          if (typeof r.data.userCredits.phone === 'number') session.phoneCredit = r.data.userCredits.phone;
+  // 一轮尝试: 成功返回 { win }, 提前失败返回 { fail }, 否则返回 { stats } 供补试判定
+  const tryRound = async () => {
+    let allRestricted = 0;
+    let blocked403 = 0;
+    let revealedEmpty = 0;
+    for (let i = 0; i < attempts; i++) {
+      const session = await pickAccount();
+      if (!session) return { fail: { ok: false, error: 'no_credit', msg: '所有账号邮箱额度已用完' } };
+      try {
+        const r = await revealWithAccount(session, item);
+        if (r.status === 200 && r.data && r.data.profile) {
+          // 更新额度 (响应里带新 credit)
+          noteUpstreamOK();
+          if (typeof r.data.credit === 'number') session.credit = r.data.credit;
+          if (r.data.userCredits) {
+            if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
+            if (typeof r.data.userCredits.phone === 'number') session.phoneCredit = r.data.userCredits.phone;
+          }
+          saveSessions();
+          const emails = (r.data.profile.emails || []).map(e => ({
+            value: e.value, confidence: e.confidence_level || '', is_guess: !!e.is_guess,
+            type: e.type === 2 ? 'personal' : (e.type === 1 ? 'work' : ''),
+          }));
+          const phones = (r.data.profile.phones || []).map(p => ({
+            value: p.value || p.number || '', confidence: p.confidence_level || '',
+          }));
+          // 免费版对该 profile 只返回资料壳、不给联系方式(通常未扣费) —— 不是"查到", 换个账号也许还能拿到
+          if (emails.length === 0 && phones.length === 0) {
+            revealedEmpty++;
+            continue;
+          }
+          return {
+            win: {
+              ok: true,
+              linkedin: item.profile_url,
+              name: item.full_name || '',
+              emails,
+              phones,
+              credit_used: 1,
+              credit_remaining: typeof r.data.credit === 'number' ? r.data.credit : session.credit,
+            },
+          };
         }
-        saveSessions();
-        const emails = (r.data.profile.emails || []).map(e => ({
-          value: e.value, confidence: e.confidence_level || '', is_guess: !!e.is_guess,
-          type: e.type === 2 ? 'personal' : (e.type === 1 ? 'work' : ''),
-        }));
-        const phones = (r.data.profile.phones || []).map(p => ({
-          value: p.value || p.number || '', confidence: p.confidence_level || '',
-        }));
-        // 免费版对该 profile 只返回资料壳、不给联系方式(通常未扣费) —— 不是"查到", 换个账号也许还能拿到
-        if (emails.length === 0 && phones.length === 0) {
-          revealedEmpty++;
+        // 受限 profile (status 900): 免费版按账号随机锁, 换下一个账号重试
+        if (r.status === 200 && r.data && r.data.status === 900) {
+          noteUpstreamOK();
+          if (r.data.userCredits) {
+            if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
+            if (typeof r.data.userCredits.phone === 'number') session.phoneCredit = r.data.userCredits.phone;
+          }
+          saveSessions();
+          session.restrictedCount = (session.restrictedCount || 0) + 1;
+          session.restrictedUntil = Date.now() + RESTRICT_COOLDOWN_MS; // 900 锁冷却, 抽样跳过
+          allRestricted++;
+          continue; // 换下一个账号
+        }
+        if (r.status === 401 || r.status === 403 || r.status === 429) {
+          // 上游限流/拦截 (出口 IP 高频触发), 不是 cookie 失效 → 绝不熔毁账号池
+          blocked403++;
+          if (PROXY_ON()) continue;                 // 有代理: 该账号出口被限, 换下一个账号(不同出口)重试
+          noteUpstreamBlock('HTTP ' + r.status);     // 无代理: 单机房 IP, 熔断冷却保护 IP
+          return { fail: { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 } };
+        }
+        if (r.status === 402 || (r.data && r.data.error && /credit/i.test(String(r.data.error)))) {
+          session.credit = 0;
+          saveSessions();
           continue;
         }
-        return {
-          ok: true,
-          linkedin: item.profile_url,
-          name: item.full_name || '',
-          emails,
-          phones,
-          credit_used: 1,
-          credit_remaining: typeof r.data.credit === 'number' ? r.data.credit : session.credit,
-        };
-      }
-      // 受限 profile (status 900): 免费版按账号随机锁, 换下一个账号重试
-      if (r.status === 200 && r.data && r.data.status === 900) {
-        noteUpstreamOK();
-        if (r.data.userCredits) {
-          if (typeof r.data.userCredits.email === 'number') session.credit = r.data.userCredits.email;
-          if (typeof r.data.userCredits.phone === 'number') session.phoneCredit = r.data.userCredits.phone;
+        // 该账号"邮箱搜索额度已用尽" (HTTP 200 但 body status=403 "run out of email searches") → 标记并换下一个账号
+        if (r.data && (r.data.status === 403 || /run out of email|out[_ ]?of[_ ]?email/i.test(String(r.data.message || (r.data.messageData && r.data.messageData.code) || '')))) {
+          session.emailOut = true; session.credit = 0; saveSessions();
+          continue;
         }
-        saveSessions();
-        session.restrictedCount = (session.restrictedCount || 0) + 1;
-        allRestricted++;
-        continue; // 换下一个账号
+        return { fail: { ok: false, error: 'upstream', msg: 'HTTP ' + r.status + ': ' + (r.text || '').slice(0, 200), credit_used: 0 } };
+      } catch (e) {
+        // 网络错误, 换账号重试
+        if (i === attempts - 1) return { fail: { ok: false, error: 'network', msg: e.message } };
       }
-      if (r.status === 401 || r.status === 403 || r.status === 429) {
-        // 上游限流/拦截 (出口 IP 高频触发), 不是 cookie 失效 → 绝不熔毁账号池
-        blocked403++;
-        if (PROXY_ON()) continue;                 // 有代理: 该账号出口被限, 换下一个账号(不同出口)重试
-        noteUpstreamBlock('HTTP ' + r.status);     // 无代理: 单机房 IP, 熔断冷却保护 IP
-        return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
-      }
-      if (r.status === 402 || (r.data && r.data.error && /credit/i.test(String(r.data.error)))) {
-        session.credit = 0;
-        saveSessions();
-        continue;
-      }
-      // 该账号"邮箱搜索额度已用尽" (HTTP 200 但 body status=403 "run out of email searches") → 标记并换下一个账号
-      if (r.data && (r.data.status === 403 || /run out of email|out[_ ]?of[_ ]?email/i.test(String(r.data.message || (r.data.messageData && r.data.messageData.code) || '')))) {
-        session.emailOut = true; session.credit = 0; saveSessions();
-        continue;
-      }
-      return { ok: false, error: 'upstream', msg: 'HTTP ' + r.status + ': ' + (r.text || '').slice(0, 200), credit_used: 0 };
-    } catch (e) {
-      // 网络错误, 换账号重试
-      if (i === attempts - 1) return { ok: false, error: 'network', msg: e.message };
     }
-  }
-  if (allRestricted === attempts) {
-    return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
-  }
-  if (blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 }; // 试了多个账号出口都被限
-  // 资料存在但免费账号池当前都拿不到邮箱/电话(免费额度已锁) → 明确判为"未查到", 而不是假"查到"
-  if (revealedEmpty > 0) return { ok: false, found: false, linkedin: item.profile_url, msg: 'no contact', credit_used: 0 };
-  return { ok: false, error: 'unknown' };
+    return { stats: { allRestricted, blocked403, revealedEmpty } };
+  };
+  const judge = (s) => {
+    if (s.allRestricted === attempts) {
+      return { ok: false, error: 'restricted', msg: '该 profile 在所有免费账号均受限，需升级付费账号', credit_used: 0 };
+    }
+    if (s.blocked403 > 0) return { ok: false, error: 'blocked', msg: CLIENT_BLOCKED_MSG, credit_used: 0 };
+    // 资料存在但免费账号池当前都拿不到邮箱/电话(免费额度已锁) → 明确判为"未查到", 而不是假"查到"
+    if (s.revealedEmpty > 0) return { ok: false, found: false, linkedin: item.profile_url, msg: 'no contact', credit_used: 0 };
+    return { ok: false, error: 'unknown' };
+  };
+
+  const r1 = await tryRound();
+  if (r1.win) return r1.win;
+  if (r1.fail) return r1.fail;
+  // 第一轮没成功: 错峰 15 秒补试一轮 (900 锁按账号随机, 等风控窗口错开+冷却池已标记本轮的锁, 换批账号可救回相当比例)
+  await new Promise(r => setTimeout(r, 15000));
+  const r2 = await tryRound();
+  if (r2.win) return r2.win;
+  if (r2.fail) return r2.fail;
+  return judge(r2.stats);
 }
 
 // 电话查询: 单独端点 /api/find/phone, 扣 phoneCredit
@@ -821,6 +898,8 @@ async function lookupPhone(item) {
         noteUpstreamOK();
         if (data.userCredits && typeof data.userCredits.phone === 'number') session.phoneCredit = data.userCredits.phone;
         saveSessions();
+        session.restrictedCount = (session.restrictedCount || 0) + 1;
+        session.restrictedUntil = Date.now() + RESTRICT_COOLDOWN_MS; // 900 锁冷却, 抽样跳过
         allRestricted++;
         continue; // 换下一个账号
       }
@@ -1067,7 +1146,7 @@ const server = http.createServer(async (req, res) => {
     const r = await enqueueOrBusy(() => lookupOne(item));
     if (r._busy) return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试' });
     if (r.ok && r.emails && r.emails.length > 0) consumeQuota(tk, 'email');
-    logUsage(req, tk, { kind: 'email', profile: item.profile_url, ok: !!r.ok, email: r.emails ? r.emails.map(e => e.value).join(';') : '', restricted: r.error === 'restricted' });
+    logUsage(req, tk, { kind: 'email', profile: item.profile_url, ok: !!r.ok, email: r.emails ? r.emails.map(e => e.value).join(';') : '', restricted: r.error === 'restricted', err: r.error || (r.found === false ? 'no_contact' : (r.ok ? '' : 'unknown')) });
     if (r.ok) return json(res, 200, { code: 0, data: r, credits: { used: r.credit_used, remaining: r.credit_remaining } });
     if (r.error === 'blocked') return json(res, 503, { code: 3002, error: 'blocked', msg: r.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
@@ -1091,7 +1170,7 @@ const server = http.createServer(async (req, res) => {
     const r = await enqueueOrBusy(() => lookupPhone(item));
     if (r._busy) return json(res, 503, { code: 3003, error: 'busy', msg: '当前排队任务过多, 请稍后重试' });
     if (r.ok && r.phone) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone_all || r.phone || '', restricted: r.error === 'restricted' });
+    logUsage(req, tk, { kind: 'phone', profile: item.profile_url, ok: !!r.ok, phone: r.phone_all || r.phone || '', restricted: r.error === 'restricted', err: r.error || (r.found === false ? 'no_contact' : (r.ok ? '' : 'unknown')) });
     if (r.ok) return json(res, 200, { code: 0, data: r });
     if (r.error === 'blocked') return json(res, 503, { code: 3002, error: 'blocked', msg: r.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     if (r.error === 'no_credit') return json(res, 402, { code: 2001, error: 'no credit', msg: r.msg });
@@ -1120,7 +1199,7 @@ const server = http.createServer(async (req, res) => {
     const ph_ok = !!(ph.ok && ph.phone);
     if (em_ok) consumeQuota(tk, 'email');
     if (ph_ok) consumeQuota(tk, 'phone');
-    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), em_ok, ph_ok, email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted' });
+    logUsage(req, tk, { kind: 'both', profile: item.profile_url, ok: !!(em.ok || ph.ok), em_ok, ph_ok, email: em.ok ? em.emails.map(e => e.value).join(';') : '', phone: ph.ok ? (ph.phone_all || ph.phone || '') : '', restricted: em.error === 'restricted' || ph.error === 'restricted', err: [em.error, ph.error].filter(Boolean).join('+') || 'unknown' });
     if (em.error === 'blocked' || ph.error === 'blocked') {
       return json(res, 503, { code: 3002, error: 'blocked', msg: em.error === 'blocked' ? em.msg : ph.msg, retry_after: Math.ceil(blockRemainMs() / 1000) });
     }
@@ -1173,7 +1252,7 @@ const server = http.createServer(async (req, res) => {
     }
     const okCount = results.filter(r => r.ok && r.emails && r.emails.length > 0).length;
     consumeQuota(tk, 'email', okCount);
-    logUsage(req, tk, { kind: 'batch', profile: 'batch:' + items.length, ok: results.some(r => r.ok), email: results.filter(r => r.ok).map(r => r.emails ? r.emails.map(e => e.value).join(';') : '').join('|') });
+    logUsage(req, tk, { kind: 'batch', profile: 'batch:' + items.length, ok: results.some(r => r.ok), email: results.filter(r => r.ok).map(r => r.emails ? r.emails.map(e => e.value).join(';') : '').join('|'), err: 'ok ' + results.filter(r => r.ok).length + '/' + results.length });
     return json(res, 200, { ok: true, total: results.length, found: okCount, results });
   }
 
